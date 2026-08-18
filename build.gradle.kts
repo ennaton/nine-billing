@@ -4,7 +4,7 @@ plugins {
     id("io.spring.dependency-management") version "1.1.7"
 }
 
-group = "co.wesan"
+group = "co.nine"
 version = "0.1.0-SNAPSHOT"
 
 java {
