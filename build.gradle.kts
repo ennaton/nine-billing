@@ -20,9 +20,13 @@ repositories {
     mavenCentral()
 }
 
+// Spring's dependency-management plugin decides Testcontainers' version and
+// wins over Gradle platforms. Its own override channel is this property.
+extra["testcontainers.version"] = "1.21.3"
+
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
-    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.flywaydb:flyway-core")
@@ -31,8 +35,8 @@ dependencies {
     runtimeOnly("org.postgresql:postgresql")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
-    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
-    testImplementation("org.testcontainers:postgresql:1.20.4")
+    testImplementation("org.testcontainers:junit-jupiter")
+    testImplementation("org.testcontainers:postgresql")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -42,6 +46,9 @@ tasks.withType<JavaCompile> {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    // Docker 29 refuses API versions older than it advertises. Tell docker-java
+    // which one to use instead of letting it guess an old default.
+    environment("DOCKER_API_VERSION", "1.44")
     testLogging {
         events("passed", "skipped", "failed")
     }
