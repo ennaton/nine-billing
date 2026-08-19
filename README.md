@@ -9,7 +9,7 @@ Every other Nine service is about scale and distribution. This one is about **no
 
 ## Status
 
-Alpha. The ledger core and its nine invariants are proven by tests against a real Postgres. Metering (usage event in, priced ledger entry out) and the HTTP surface are in place and tested end to end over HTTP. Not yet done: reconciliation job, tenant RLS policies, a real auth layer.
+Alpha. The ledger core and its nine invariants are proven by tests against a real Postgres. Metering (usage event in, priced ledger entry out) and the HTTP surface are in place and tested end to end over HTTP. Reconciliation runs on a schedule and on demand and is proven to catch drift. Not yet done: tenant RLS policies, a real auth layer.
 
 ## The invariants
 
@@ -40,6 +40,8 @@ Two of them are checked twice: once in Java so the caller gets a clear error bef
 **Idempotency is a unique constraint, not an `if`.** An application-level "does this key exist" check races under concurrency. The constraint does not. A replay surfaces as `DuplicateKeyException`, and the service returns the original transaction id: a retry after a network timeout gets the same answer it would have got the first time.
 
 **Plain JDBC, no ORM.** The guarantees live in the schema. JDBC keeps every statement one step from the constraint that backs it; an ORM would hide the exact moment the database says no.
+
+**Reconciliation is a job, and it records clean runs too.** `usage_charges` is what metering believes it charged; `postings` is what the ledger holds. They are written in one transaction, so in theory they cannot disagree. In practice a manual SQL fix, a bypassed trigger or a bug in this service can split them, and the only way to know is to compare. Three set-based queries run every 15 minutes (and on `POST /v1/reconciliation/run`): amount mismatch, orphan charge, unbalanced transaction. Every run is recorded, clean or not, because "we checked and found nothing" is evidence and silence is not. The test for this deliberately corrupts the ledger as a superuser and asserts the drift is reported.
 
 **Non-superuser at runtime.** [nine-infra](https://github.com/canakyuz/nine-infra) provisions a `nine_app` role that is neither superuser nor table owner, so row-level security applies to it when tenancy policies land.
 
@@ -85,6 +87,9 @@ Send the same `eventId` again and you get `200`, `replayed: true`, the same `tra
 | `GET` | `/v1/tenants/{id}/balance` | What the tenant owes (receivable balance) |
 | `GET` | `/v1/tenants/{id}/ledger?limit=` | Recent ledger lines, newest first |
 | `POST` | `/v1/ledger/{txId}/reverse` | Reverse a transaction. A new transaction; nothing deleted. Second attempt is `409` |
+| `POST` | `/v1/reconciliation/run` | Compare metering against the ledger now; returns the report |
+| `GET` | `/v1/reconciliation/runs` | Recent runs with per-kind drift counts and a `clean` flag |
+| `GET` | `/v1/reconciliation/runs/{id}/findings` | Every drift found in one run |
 
 Errors are `application/problem+json`: `400` fix the request, `422` well formed but cannot be honored (unknown metric, unbalanced), `409` already done or conflicts, `404` no such transaction.
 
@@ -99,12 +104,15 @@ src/main/java/co/nine/billing/
   infrastructure/  LedgerRepository: JDBC against the schema
   metering/        UsageEvent, PricePlan, Charge, MeteringService, MeteringRepository
   api/             BillingController, ApiExceptionHandler (problem+json)
+  reconciliation/  ReconciliationService (scheduled + on demand), repository, controller
 src/main/resources/db/migration/
   V1__ledger.sql   accounts, ledger_transactions, postings, triggers, balance view
   V2__metering.sql price_plans, usage_charges
+  V3__reconciliation.sql reconciliation_runs, reconciliation_findings
 src/test/java/co/nine/billing/
   LedgerInvariantsTest.java   the nine invariants against real Postgres
   MeteringHttpTest.java       the API driven over HTTP, end to end
+  ReconciliationTest.java     corrupts the ledger on purpose, asserts the drift is caught
 http/
   billing.http                       IntelliJ HTTP client walkthrough
   nine-billing.postman_collection.json
