@@ -1,15 +1,32 @@
 spring:
   application:
     name: nine-billing
+
+  # Two roles on purpose.
+  #
+  # The runtime datasource is nine_app: not a superuser, not the table owner.
+  # Both of those bypass row-level security, so the app must be neither, or
+  # every policy in V4 is decoration.
+  #
+  # Flyway migrates as the owner, because creating tables, triggers and
+  # policies needs it. It never serves a request.
   datasource:
-    # Matches nine-infra compose: separate database per service, non-superuser
-    # role. Override with SPRING_DATASOURCE_* in any other environment.
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/nine_billing}
-    username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+    username: ${SPRING_DATASOURCE_USERNAME:nine_app}
+    password: ${SPRING_DATASOURCE_PASSWORD:nine_app_dev}
   flyway:
     enabled: true
     locations: classpath:db/migration
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/nine_billing}
+    user: ${NINE_MIGRATION_USERNAME:postgres}
+    password: ${NINE_MIGRATION_PASSWORD:postgres}
+
+nine:
+  billing:
+    reconcile:
+      interval: ${NINE_RECONCILE_INTERVAL:PT15M}
+    # Required to mint API keys via POST /admin/keys. Empty disables minting.
+    bootstrap-secret: ${NINE_BOOTSTRAP_SECRET:}
 
 management:
   endpoints:

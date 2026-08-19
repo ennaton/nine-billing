@@ -9,7 +9,7 @@ Every other Nine service is about scale and distribution. This one is about **no
 
 ## Status
 
-Alpha. The ledger core and its nine invariants are proven by tests against a real Postgres. Metering (usage event in, priced ledger entry out) and the HTTP surface are in place and tested end to end over HTTP. Reconciliation runs on a schedule and on demand and is proven to catch drift. Not yet done: tenant RLS policies, a real auth layer.
+Alpha. The ledger core and its nine invariants are proven by tests against a real Postgres. Metering (usage event in, priced ledger entry out) and the HTTP surface are in place and tested end to end over HTTP. Reconciliation runs on a schedule and on demand and is proven to catch drift. API-key auth and row-level tenant isolation are in place; the service connects as a non-owner role and every tenant table has a forced policy. The isolation test runs the four assertions from [the RLS article](https://canakyuz.co/blog/multi-tenant-postgres-rls) against this schema as that role.
 
 ## The invariants
 
@@ -43,7 +43,15 @@ Two of them are checked twice: once in Java so the caller gets a clear error bef
 
 **Reconciliation is a job, and it records clean runs too.** `usage_charges` is what metering believes it charged; `postings` is what the ledger holds. They are written in one transaction, so in theory they cannot disagree. In practice a manual SQL fix, a bypassed trigger or a bug in this service can split them, and the only way to know is to compare. Three set-based queries run every 15 minutes (and on `POST /v1/reconciliation/run`): amount mismatch, orphan charge, unbalanced transaction. Every run is recorded, clean or not, because "we checked and found nothing" is evidence and silence is not. The test for this deliberately corrupts the ledger as a superuser and asserts the drift is reported.
 
-**Non-superuser at runtime.** [nine-infra](https://github.com/canakyuz/nine-infra) provisions a `nine_app` role that is neither superuser nor table owner, so row-level security applies to it when tenancy policies land.
+**Two database roles, on purpose.** Flyway migrates as the owner. The service runs as `nine_app`: not a superuser, not the owner of any table, and holding no `UPDATE` or `DELETE` grant on ledger tables at all. Superuser and owner both bypass row-level security, so the runtime role must be neither or every policy is decoration. The immutability tests prove both layers: `nine_app` gets `permission denied` before the trigger is consulted; the owner gets through the grant and is stopped by the trigger.
+
+**Tenant isolation is a test on a reused connection.** Every tenant table has `FORCE ROW LEVEL SECURITY` and a policy on `current_tenant()`, which is `NULLIF(current_setting('app.tenant_id', true), '')::uuid`. The `NULLIF` is load-bearing: after a transaction commits, a custom GUC reverts to the empty string, not to unset, and `''::uuid` would turn the security boundary into a 500. With `NULLIF` it turns into zero rows. The GUC is bound in a `DataSource` wrapper on every connection checkout, not in a helper a repository might forget to call. `TenantIsolationTest` asserts: another tenant sees zero rows, cannot write a row claiming your tenant, no context at all sees zero rows, and no context does not throw.
+
+**Cross-tenant requests are 404, never 403.** The HTTP guard compares the tenant named in the request with the tenant of the key; a mismatch is answered exactly like a missing resource. Existence is not disclosed.
+
+**Reconciliation crosses tenants through a separate operator context**, set only by the job inside its own transaction and reachable from no request. Without it the job would run under RLS with no tenant, see zero rows, and report "clean" forever: the silent failure this whole design exists to avoid.
+
+**API keys are hashed.** SHA-256 of the plaintext is stored; the plaintext is returned once from `POST /admin/keys` (guarded by a bootstrap secret from the environment, outside `/v1`) and never again.
 
 ## Run
 
@@ -53,11 +61,11 @@ Needs a JDK 17 and Docker (for the tests).
 # local Postgres from nine-infra (port 15432, database nine_billing)
 (cd ../infra && docker compose up -d postgres)
 
-./gradlew bootRun          # migrates with Flyway, serves on :18081
+NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun   # migrates with Flyway, serves on :18081
 ./gradlew test             # spins up its own Postgres via Testcontainers
 ```
 
-Health: `GET /actuator/health`.
+Health: `GET /actuator/health`. Everything under `/v1` needs `X-Api-Key`; mint one with `POST /admin/keys` and the bootstrap secret (step 0 in `http/billing.http`).
 
 ## Try it
 
@@ -87,11 +95,12 @@ Send the same `eventId` again and you get `200`, `replayed: true`, the same `tra
 | `GET` | `/v1/tenants/{id}/balance` | What the tenant owes (receivable balance) |
 | `GET` | `/v1/tenants/{id}/ledger?limit=` | Recent ledger lines, newest first |
 | `POST` | `/v1/ledger/{txId}/reverse` | Reverse a transaction. A new transaction; nothing deleted. Second attempt is `409` |
+| `POST` | `/admin/keys` | Mint a tenant's API key. Bootstrap secret required. Plaintext shown once |
 | `POST` | `/v1/reconciliation/run` | Compare metering against the ledger now; returns the report |
 | `GET` | `/v1/reconciliation/runs` | Recent runs with per-kind drift counts and a `clean` flag |
 | `GET` | `/v1/reconciliation/runs/{id}/findings` | Every drift found in one run |
 
-Errors are `application/problem+json`: `400` fix the request, `422` well formed but cannot be honored (unknown metric, unbalanced), `409` already done or conflicts, `404` no such transaction.
+Errors are `application/problem+json`: `401` no or bad key, `400` fix the request, `422` well formed but cannot be honored (unknown metric, unbalanced), `409` already done or conflicts, `404` no such transaction.
 
 Prices live in `price_plans` (V2 migration): `events_ingested`, `agent_seconds`, `seats`. Minor units, GBP.
 
@@ -105,14 +114,18 @@ src/main/java/co/nine/billing/
   metering/        UsageEvent, PricePlan, Charge, MeteringService, MeteringRepository
   api/             BillingController, ApiExceptionHandler (problem+json)
   reconciliation/  ReconciliationService (scheduled + on demand), repository, controller
+  auth/            ApiKeyFilter, TenantContext, TenantAwareDataSource, OperatorContext, key bootstrap
 src/main/resources/db/migration/
   V1__ledger.sql   accounts, ledger_transactions, postings, triggers, balance view
   V2__metering.sql price_plans, usage_charges
   V3__reconciliation.sql reconciliation_runs, reconciliation_findings
+  V4__auth_and_rls.sql   api_keys, nine_app grants, current_tenant(), is_operator(), forced policies
 src/test/java/co/nine/billing/
   LedgerInvariantsTest.java   the nine invariants against real Postgres
   MeteringHttpTest.java       the API driven over HTTP, end to end
   ReconciliationTest.java     corrupts the ledger on purpose, asserts the drift is caught
+  TenantIsolationTest.java    four RLS assertions as nine_app, plus 401 and 404 at the HTTP layer
+  PostgresTestBase.java       one Postgres, two roles: owner migrates, nine_app serves
 http/
   billing.http                       IntelliJ HTTP client walkthrough
   nine-billing.postman_collection.json

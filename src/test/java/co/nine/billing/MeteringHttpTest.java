@@ -8,13 +8,10 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpStatus;
+import org.junit.jupiter.api.BeforeAll;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.List;
 import java.util.Map;
@@ -26,25 +23,35 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The metering surface, driven exactly the way a client would drive it: over
  * HTTP, against a real Postgres. This is the Postman session, automated.
  */
-@Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-class MeteringHttpTest {
+class MeteringHttpTest extends PostgresTestBase {
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
 
-    @DynamicPropertySource
-    static void datasource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        r.add("spring.datasource.username", POSTGRES::getUsername);
-        r.add("spring.datasource.password", POSTGRES::getPassword);
-    }
 
-    @Autowired TestRestTemplate http;
+    @Autowired TestRestTemplate raw;
+    TestRestTemplate http;   // same client, with the tenant's key on every request
 
     static final UUID TENANT = UUID.randomUUID();
     static UUID firstTx;
+    static String apiKey;
+
+    @org.junit.jupiter.api.BeforeEach
+    void client() {
+        if (apiKey == null) {
+            // Mint the tenant's first key through the bootstrap endpoint, the
+            // way an operator would.
+            var headers = new org.springframework.http.HttpHeaders();
+            headers.set("X-Bootstrap-Secret", "test-bootstrap-secret");
+            var res = raw.postForEntity("/admin/keys",
+                new org.springframework.http.HttpEntity<>(Map.of("tenantId", TENANT, "label", "test"), headers), Map.class);
+            assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+            apiKey = (String) res.getBody().get("apiKey");
+        }
+        http = new TestRestTemplate(new RestTemplateBuilder()
+            .rootUri(raw.getRootUri())
+            .defaultHeader("X-Api-Key", apiKey));
+    }
 
     @Test @Order(1)
     @DisplayName("POST /v1/usage prices an event and returns 201 with the charge")

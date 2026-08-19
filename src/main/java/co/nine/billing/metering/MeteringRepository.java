@@ -32,12 +32,16 @@ public class MeteringRepository {
      * one inserts, the other reads the same id. No application lock.
      */
     public UUID ensureAccount(UUID tenantId, String code, AccountType type, String currency) {
-        return jdbc.queryForObject("""
+        // DO NOTHING, not DO UPDATE: accounts never change once created, and
+        // nine_app holds no UPDATE grant on the table, by design. The follow-up
+        // SELECT resolves the race: whoever lost the insert reads the winner's id.
+        jdbc.update("""
             INSERT INTO accounts (id, tenant_id, code, type, currency)
             VALUES (gen_random_uuid(), ?, ?, ?, ?)
-            ON CONFLICT (tenant_id, code) DO UPDATE SET code = EXCLUDED.code
-            RETURNING id
-            """, UUID.class, tenantId, code, type.name(), currency);
+            ON CONFLICT (tenant_id, code) DO NOTHING
+            """, tenantId, code, type.name(), currency);
+        return jdbc.queryForObject(
+            "SELECT id FROM accounts WHERE tenant_id = ? AND code = ?", UUID.class, tenantId, code);
     }
 
     public Optional<UUID> chargeFor(UUID tenantId, String eventId) {

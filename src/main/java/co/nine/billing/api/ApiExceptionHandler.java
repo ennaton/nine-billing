@@ -1,5 +1,6 @@
 package co.nine.billing.api;
 
+import co.nine.billing.auth.TenantMismatchException;
 import co.nine.billing.domain.DuplicateEntryException;
 import co.nine.billing.domain.UnbalancedEntryException;
 import co.nine.billing.metering.UnknownMetricException;
@@ -42,9 +43,11 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.CONFLICT, "Ledger refused the operation", firstLine(detail));
     }
 
-    @ExceptionHandler(EmptyResultDataAccessException.class)
-    ProblemDetail notFound(EmptyResultDataAccessException e) {
-        return problem(HttpStatus.NOT_FOUND, "Not found", "no such transaction for this tenant");
+    @ExceptionHandler({EmptyResultDataAccessException.class, TenantMismatchException.class})
+    ProblemDetail notFound(RuntimeException e) {
+        // A tenant asking about another tenant's data gets the same answer as
+        // asking about nothing: 404. Existence is not disclosed.
+        return problem(HttpStatus.NOT_FOUND, "Not found", "no such resource for this tenant");
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

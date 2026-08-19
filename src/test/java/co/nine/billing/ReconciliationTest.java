@@ -4,6 +4,9 @@ import co.nine.billing.metering.MeteringService;
 import co.nine.billing.metering.UsageEvent;
 import co.nine.billing.reconciliation.ReconciliationService;
 import co.nine.billing.reconciliation.ReconciliationService.Report;
+import co.nine.billing.auth.TenantContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -12,11 +15,6 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -29,20 +27,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * switching the immutability trigger off and editing rows underneath the
  * service. If that does not show up in the report, the job is decoration.
  */
-@Testcontainers
-@SpringBootTest(properties = "nine.billing.reconcile.interval=PT24H")  // keep the scheduler out of the way
+@SpringBootTest
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-class ReconciliationTest {
+class ReconciliationTest extends PostgresTestBase {
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
 
-    @DynamicPropertySource
-    static void datasource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        r.add("spring.datasource.username", POSTGRES::getUsername);
-        r.add("spring.datasource.password", POSTGRES::getPassword);
-    }
 
     @Autowired MeteringService metering;
     @Autowired ReconciliationService reconciliation;
@@ -51,6 +40,16 @@ class ReconciliationTest {
     static final UUID TENANT = UUID.randomUUID();
     static UUID chargedTx;
     static long cleanRunId, dirtyRunId;
+
+    @BeforeEach void bind()   { TenantContext.bind(TENANT); }
+    @AfterEach  void unbind() { TenantContext.clear(); }
+
+    /** Superuser connection, outside the app's pool and outside RLS: the only way to tamper. */
+    JdbcTemplate superuser() {
+        var ds = new org.springframework.jdbc.datasource.DriverManagerDataSource(
+            POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        return new JdbcTemplate(ds);
+    }
 
     @Test @Order(1)
     @DisplayName("a healthy ledger reconciles clean, and the clean run is recorded")
@@ -71,12 +70,14 @@ class ReconciliationTest {
     @Test @Order(2)
     @DisplayName("an amount edited underneath the service shows up as AMOUNT_MISMATCH")
     void tamperedAmountIsCaught() {
-        // The only way to get here: bypass immutability as a superuser.
-        jdbc.execute("ALTER TABLE postings DISABLE TRIGGER postings_immutable");
-        jdbc.execute("ALTER TABLE postings DISABLE TRIGGER postings_balance_check");
-        jdbc.update("UPDATE postings SET amount_minor = amount_minor + 1 WHERE transaction_id = ? AND direction = 'DEBIT'", chargedTx);
-        jdbc.execute("ALTER TABLE postings ENABLE TRIGGER postings_immutable");
-        jdbc.execute("ALTER TABLE postings ENABLE TRIGGER postings_balance_check");
+        // The only way to get here: bypass immutability AND row-level security
+        // as a superuser. nine_app cannot do either; that is the point.
+        JdbcTemplate su = superuser();
+        su.execute("ALTER TABLE postings DISABLE TRIGGER postings_immutable");
+        su.execute("ALTER TABLE postings DISABLE TRIGGER postings_balance_check");
+        su.update("UPDATE postings SET amount_minor = amount_minor + 1 WHERE transaction_id = ? AND direction = 'DEBIT'", chargedTx);
+        su.execute("ALTER TABLE postings ENABLE TRIGGER postings_immutable");
+        su.execute("ALTER TABLE postings ENABLE TRIGGER postings_balance_check");
 
         Report r = reconciliation.run();
 

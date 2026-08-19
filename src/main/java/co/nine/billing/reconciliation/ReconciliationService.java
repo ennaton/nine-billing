@@ -1,5 +1,6 @@
 package co.nine.billing.reconciliation;
 
+import co.nine.billing.auth.OperatorContext;
 import co.nine.billing.reconciliation.ReconciliationRepository.Finding;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,8 +42,20 @@ public class ReconciliationService {
         }
     }
 
+    /**
+     * Runs with operator context so the cross-tenant comparison sees every
+     * row. Without it, RLS would show the job zero rows and it would report
+     * "clean" forever: the silent failure this whole design exists to avoid.
+     */
     @Transactional
     public Report run() {
+        // The GUC is bound when the connection is checked out, which happens
+        // on the first statement inside this transaction. Setting operator
+        // context here, before that first statement, is therefore in time.
+        return OperatorContext.run(this::compare);
+    }
+
+    private Report compare() {
         Instant started = Instant.now();
 
         List<Finding> mismatches = repo.amountMismatches();

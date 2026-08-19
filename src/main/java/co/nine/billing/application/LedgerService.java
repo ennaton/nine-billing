@@ -40,7 +40,14 @@ public class LedgerService {
      * never rewritten; the balance simply returns to where it was.
      */
     public UUID reverse(UUID tenantId, UUID originalTxId, String idempotencyKey, String reason) {
-        List<Posting> mirrored = repo.postingsOf(originalTxId).stream()
+        List<Posting> original = repo.postingsOf(originalTxId);
+        if (original.isEmpty()) {
+            // Either the transaction does not exist or RLS hides it because it
+            // belongs to another tenant. Same answer for both: not found.
+            throw new org.springframework.dao.EmptyResultDataAccessException(
+                "no such transaction for this tenant: " + originalTxId, 1);
+        }
+        List<Posting> mirrored = original.stream()
             .map(p -> new Posting(
                 p.accountId(),
                 p.direction() == Direction.DEBIT ? Direction.CREDIT : Direction.DEBIT,

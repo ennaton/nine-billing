@@ -1,6 +1,7 @@
 package co.nine.billing.api;
 
 import co.nine.billing.application.LedgerService;
+import co.nine.billing.auth.Tenancy;
 import co.nine.billing.domain.Money;
 import co.nine.billing.metering.Charge;
 import co.nine.billing.metering.MeteringRepository;
@@ -56,6 +57,7 @@ public class BillingController {
     /** Report usage. Same eventId twice returns the same charge with replayed=true and a 200 instead of 201. */
     @PostMapping("/usage")
     public ResponseEntity<ChargeResponse> usage(@Valid @RequestBody UsageRequest r) {
+        Tenancy.requireOwn(r.tenantId());
         Instant at = r.occurredAt() != null ? r.occurredAt() : Instant.now();
         Charge c = metering.charge(new UsageEvent(r.eventId(), r.tenantId(), r.metric(), r.quantity(), at));
         return ResponseEntity.status(c.replayed() ? HttpStatus.OK : HttpStatus.CREATED).body(ChargeResponse.from(c));
@@ -65,6 +67,7 @@ public class BillingController {
     @GetMapping("/tenants/{tenantId}/balance")
     public BalanceResponse balance(@PathVariable UUID tenantId,
                                    @RequestParam(defaultValue = "GBP") String currency) {
+        Tenancy.requireOwn(tenantId);
         Money owed = metering.owed(tenantId, currency);
         return new BalanceResponse(tenantId, owed.minor(), currency, display(owed));
     }
@@ -73,6 +76,7 @@ public class BillingController {
     @GetMapping("/tenants/{tenantId}/ledger")
     public List<MeteringRepository.LedgerLine> ledger(@PathVariable UUID tenantId,
                                                       @RequestParam(defaultValue = "50") @Min(1) int limit) {
+        Tenancy.requireOwn(tenantId);
         return metering.recent(tenantId, Math.min(limit, 500));
     }
 
@@ -80,6 +84,7 @@ public class BillingController {
     @PostMapping("/ledger/{transactionId}/reverse")
     @ResponseStatus(HttpStatus.CREATED)
     public ReverseResponse reverse(@PathVariable UUID transactionId, @Valid @RequestBody ReverseRequest r) {
+        Tenancy.requireOwn(r.tenantId());
         UUID reversal = ledger.reverse(r.tenantId(), transactionId, r.idempotencyKey(), r.reason());
         return new ReverseResponse(reversal, transactionId);
     }

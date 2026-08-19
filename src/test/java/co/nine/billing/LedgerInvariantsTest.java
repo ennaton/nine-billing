@@ -16,6 +16,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import co.nine.billing.auth.TenantContext;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -23,11 +25,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * The proof gate for nine-billing. Each test attacks one invariant and expects
@@ -36,19 +33,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * constraints and nothing else would exercise them.
  */
 @SpringBootTest
-@Testcontainers
-class LedgerInvariantsTest {
+class LedgerInvariantsTest extends PostgresTestBase {
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES =
-        new PostgreSQLContainer<>("postgres:16-alpine").withDatabaseName("nine_billing");
 
-    @DynamicPropertySource
-    static void datasource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        r.add("spring.datasource.username", POSTGRES::getUsername);
-        r.add("spring.datasource.password", POSTGRES::getPassword);
-    }
 
     @Autowired LedgerService ledger;
     @Autowired JdbcTemplate jdbc;
@@ -58,9 +45,17 @@ class LedgerInvariantsTest {
 
     @BeforeEach
     void accounts() {
+        // Under RLS every statement needs a tenant. The HTTP filter does this
+        // per request; here, calling the service directly, the test does it.
+        TenantContext.bind(tenant);
         cash = account("cash", "ASSET", "GBP");
         revenue = account("revenue", "REVENUE", "GBP");
         usdCash = account("usd_cash", "ASSET", "USD");
+    }
+
+    @AfterEach
+    void unbind() {
+        TenantContext.clear();
     }
 
     // ---- 1. balanced entry commits ------------------------------------------------
@@ -130,19 +125,31 @@ class LedgerInvariantsTest {
 
     // ---- 6 and 7. immutability -----------------------------------------------------
 
-    @Test @DisplayName("6. UPDATE on a posting is rejected by the database")
+    @Test @DisplayName("6. UPDATE on a posting is rejected by the database, twice over")
     void updateRejected() {
         UUID tx = ledger.post(entry("charge-4", debit(cash, 100), credit(revenue, 100)));
+
+        // Layer 1: the application role holds no UPDATE grant. Permission denied
+        // before the trigger is even consulted.
         assertThatThrownBy(() -> jdbc.update("UPDATE postings SET amount_minor = 9999 WHERE transaction_id = ?", tx))
-            .hasMessageContaining("immutable");
+            .rootCause().hasMessageContaining("permission denied");
+
+        // Layer 2: even the table owner, who has the grant, is stopped by the trigger.
+        assertThatThrownBy(() -> superuser().update("UPDATE postings SET amount_minor = 9999 WHERE transaction_id = ?", tx))
+            .rootCause().hasMessageContaining("immutable");
+
         assertThat(ledger.balanceMinor(cash)).isEqualTo(100);
     }
 
-    @Test @DisplayName("7. DELETE on a transaction is rejected by the database")
+    @Test @DisplayName("7. DELETE on a transaction is rejected by the database, twice over")
     void deleteRejected() {
         UUID tx = ledger.post(entry("charge-5", debit(cash, 100), credit(revenue, 100)));
+
         assertThatThrownBy(() -> jdbc.update("DELETE FROM ledger_transactions WHERE id = ?", tx))
-            .hasMessageContaining("immutable");
+            .rootCause().hasMessageContaining("permission denied");                       // no grant
+        assertThatThrownBy(() -> superuser().update("DELETE FROM ledger_transactions WHERE id = ?", tx))
+            .rootCause().hasMessageContaining("immutable");                               // trigger
+
         assertThat(count("SELECT count(*) FROM ledger_transactions WHERE id = ?", tx)).isEqualTo(1);
     }
 
@@ -180,7 +187,12 @@ class LedgerInvariantsTest {
             final int n = i;
             pool.submit(() -> {
                 start.await();
-                ledger.post(entry("concurrent-" + n, debit(cash, 10), credit(revenue, 10)));
+                TenantContext.bind(tenant);   // ThreadLocal: each worker binds its own
+                try {
+                    ledger.post(entry("concurrent-" + n, debit(cash, 10), credit(revenue, 10)));
+                } finally {
+                    TenantContext.clear();
+                }
                 return null;
             });
         }
@@ -192,6 +204,12 @@ class LedgerInvariantsTest {
     }
 
     // ---- helpers -------------------------------------------------------------------
+
+    /** The table owner, outside the app's pool. The only principal that can reach the triggers. */
+    JdbcTemplate superuser() {
+        return new JdbcTemplate(new org.springframework.jdbc.datasource.DriverManagerDataSource(
+            POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
+    }
 
     UUID account(String code, String type, String ccy) {
         UUID id = UUID.randomUUID();

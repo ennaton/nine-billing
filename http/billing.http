@@ -3,10 +3,27 @@
 
 @host = http://localhost:18081
 @tenant = 11111111-1111-1111-1111-111111111111
+@apiKey = PASTE-FROM-STEP-0
+
+### 0. Mint the tenant's API key. Needs the bootstrap secret the service was started with:
+###    NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun
+###    Copy "apiKey" from the response into @apiKey above. It is shown once.
+POST {{host}}/admin/keys
+Content-Type: application/json
+X-Bootstrap-Secret: dev-bootstrap
+
+{
+  "tenantId": "{{tenant}}",
+  "label": "local dev"
+}
+
+### 0b. Without a key, everything under /v1 is 401 problem+json.
+GET {{host}}/v1/tenants/{{tenant}}/balance
 
 ### 1. Report usage: 120 agent-seconds. Expect 201, chargedMinor 240 (2.40 GBP).
 POST {{host}}/v1/usage
 Content-Type: application/json
+X-Api-Key: {{apiKey}}
 
 {
   "eventId": "evt-001",
@@ -18,6 +35,7 @@ Content-Type: application/json
 ### 2. Same event again. Expect 200, replayed: true, SAME transactionId, no second charge.
 POST {{host}}/v1/usage
 Content-Type: application/json
+X-Api-Key: {{apiKey}}
 
 {
   "eventId": "evt-001",
@@ -29,6 +47,7 @@ Content-Type: application/json
 ### 3. Another metric. 3 seats at 9.00 GBP. Expect 201, chargedMinor 2700.
 POST {{host}}/v1/usage
 Content-Type: application/json
+X-Api-Key: {{apiKey}}
 
 {
   "eventId": "evt-002",
@@ -39,13 +58,16 @@ Content-Type: application/json
 
 ### 4. Balance. Expect owedMinor 2940, display "29.40 GBP".
 GET {{host}}/v1/tenants/{{tenant}}/balance
+X-Api-Key: {{apiKey}}
 
 ### 5. Ledger lines, newest first. Two transactions, four postings.
 GET {{host}}/v1/tenants/{{tenant}}/ledger?limit=20
+X-Api-Key: {{apiKey}}
 
 ### 6. Unknown metric. Expect 422 application/problem+json, balance unchanged.
 POST {{host}}/v1/usage
 Content-Type: application/json
+X-Api-Key: {{apiKey}}
 
 {
   "eventId": "evt-003",
@@ -57,6 +79,7 @@ Content-Type: application/json
 ### 7. Bad request: blank eventId, quantity 0. Expect 400 naming both fields.
 POST {{host}}/v1/usage
 Content-Type: application/json
+X-Api-Key: {{apiKey}}
 
 {
   "eventId": "",
@@ -69,6 +92,7 @@ Content-Type: application/json
 ### Then rerun step 4: balance drops by that amount. Rerun step 5: lines grew, nothing deleted.
 POST {{host}}/v1/ledger/PASTE-TRANSACTION-ID-HERE/reverse
 Content-Type: application/json
+X-Api-Key: {{apiKey}}
 
 {
   "tenantId": "{{tenant}}",
@@ -79,6 +103,7 @@ Content-Type: application/json
 ### 9. Reverse the same transaction again. Expect 409: a transaction is reversed once.
 POST {{host}}/v1/ledger/PASTE-TRANSACTION-ID-HERE/reverse
 Content-Type: application/json
+X-Api-Key: {{apiKey}}
 
 {
   "tenantId": "{{tenant}}",
@@ -91,9 +116,12 @@ GET {{host}}/actuator/health
 
 ### 11. Reconciliation: run it now. Expect clean: true, findings: [].
 POST {{host}}/v1/reconciliation/run
+X-Api-Key: {{apiKey}}
 
 ### 12. Recent reconciliation runs. The scheduled job also writes here every 15 minutes.
 GET {{host}}/v1/reconciliation/runs
+X-Api-Key: {{apiKey}}
 
 ### 13. Findings of a run (paste an id from step 12). Empty on a healthy ledger.
 GET {{host}}/v1/reconciliation/runs/1/findings
+X-Api-Key: {{apiKey}}
