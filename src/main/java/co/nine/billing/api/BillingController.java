@@ -1,0 +1,92 @@
+package co.nine.billing.api;
+
+import co.nine.billing.application.LedgerService;
+import co.nine.billing.domain.Money;
+import co.nine.billing.metering.Charge;
+import co.nine.billing.metering.MeteringRepository;
+import co.nine.billing.metering.MeteringService;
+import co.nine.billing.metering.UsageEvent;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/v1")
+public class BillingController {
+
+    private final MeteringService metering;
+    private final LedgerService ledger;
+
+    public BillingController(MeteringService metering, LedgerService ledger) {
+        this.metering = metering;
+        this.ledger = ledger;
+    }
+
+    // ---- requests / responses -------------------------------------------
+
+    public record UsageRequest(
+            @NotBlank String eventId,
+            @NotNull UUID tenantId,
+            @NotBlank String metric,
+            @Min(1) long quantity,
+            Instant occurredAt) {}
+
+    public record ChargeResponse(UUID transactionId, long chargedMinor, String currency, boolean replayed) {
+        static ChargeResponse from(Charge c) {
+            return new ChargeResponse(c.transactionId(), c.amount().minor(), c.amount().currency().getCurrencyCode(), c.replayed());
+        }
+    }
+
+    public record BalanceResponse(UUID tenantId, long owedMinor, String currency, String display) {}
+
+    public record ReverseRequest(@NotNull UUID tenantId, @NotBlank String idempotencyKey, @NotBlank String reason) {}
+
+    public record ReverseResponse(UUID reversalTransactionId, UUID reversedTransactionId) {}
+
+    // ---- endpoints ------------------------------------------------------
+
+    /** Report usage. Same eventId twice returns the same charge with replayed=true and a 200 instead of 201. */
+    @PostMapping("/usage")
+    public ResponseEntity<ChargeResponse> usage(@Valid @RequestBody UsageRequest r) {
+        Instant at = r.occurredAt() != null ? r.occurredAt() : Instant.now();
+        Charge c = metering.charge(new UsageEvent(r.eventId(), r.tenantId(), r.metric(), r.quantity(), at));
+        return ResponseEntity.status(c.replayed() ? HttpStatus.OK : HttpStatus.CREATED).body(ChargeResponse.from(c));
+    }
+
+    /** What the tenant currently owes. */
+    @GetMapping("/tenants/{tenantId}/balance")
+    public BalanceResponse balance(@PathVariable UUID tenantId,
+                                   @RequestParam(defaultValue = "GBP") String currency) {
+        Money owed = metering.owed(tenantId, currency);
+        return new BalanceResponse(tenantId, owed.minor(), currency, display(owed));
+    }
+
+    /** Recent ledger lines for a tenant, newest first. */
+    @GetMapping("/tenants/{tenantId}/ledger")
+    public List<MeteringRepository.LedgerLine> ledger(@PathVariable UUID tenantId,
+                                                      @RequestParam(defaultValue = "50") @Min(1) int limit) {
+        return metering.recent(tenantId, Math.min(limit, 500));
+    }
+
+    /** Reverse a transaction. The reversal is a new transaction; nothing is deleted. */
+    @PostMapping("/ledger/{transactionId}/reverse")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ReverseResponse reverse(@PathVariable UUID transactionId, @Valid @RequestBody ReverseRequest r) {
+        UUID reversal = ledger.reverse(r.tenantId(), transactionId, r.idempotencyKey(), r.reason());
+        return new ReverseResponse(reversal, transactionId);
+    }
+
+    private static String display(Money m) {
+        int digits = m.currency().getDefaultFractionDigits();
+        long scale = 1; for (int i = 0; i < digits; i++) scale *= 10;
+        return String.format("%d.%0" + digits + "d %s", m.minor() / scale, Math.abs(m.minor() % scale), m.currency());
+    }
+}

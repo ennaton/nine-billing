@@ -1,0 +1,90 @@
+### Nine billing: walk through the whole surface.
+### In IntelliJ, click the green arrow next to each request. Run them top to bottom.
+
+@host = http://localhost:18081
+@tenant = 11111111-1111-1111-1111-111111111111
+
+### 1. Report usage: 120 agent-seconds. Expect 201, chargedMinor 240 (2.40 GBP).
+POST {{host}}/v1/usage
+Content-Type: application/json
+
+{
+  "eventId": "evt-001",
+  "tenantId": "{{tenant}}",
+  "metric": "agent_seconds",
+  "quantity": 120
+}
+
+### 2. Same event again. Expect 200, replayed: true, SAME transactionId, no second charge.
+POST {{host}}/v1/usage
+Content-Type: application/json
+
+{
+  "eventId": "evt-001",
+  "tenantId": "{{tenant}}",
+  "metric": "agent_seconds",
+  "quantity": 120
+}
+
+### 3. Another metric. 3 seats at 9.00 GBP. Expect 201, chargedMinor 2700.
+POST {{host}}/v1/usage
+Content-Type: application/json
+
+{
+  "eventId": "evt-002",
+  "tenantId": "{{tenant}}",
+  "metric": "seats",
+  "quantity": 3
+}
+
+### 4. Balance. Expect owedMinor 2940, display "29.40 GBP".
+GET {{host}}/v1/tenants/{{tenant}}/balance
+
+### 5. Ledger lines, newest first. Two transactions, four postings.
+GET {{host}}/v1/tenants/{{tenant}}/ledger?limit=20
+
+### 6. Unknown metric. Expect 422 application/problem+json, balance unchanged.
+POST {{host}}/v1/usage
+Content-Type: application/json
+
+{
+  "eventId": "evt-003",
+  "tenantId": "{{tenant}}",
+  "metric": "moon_landings",
+  "quantity": 1
+}
+
+### 7. Bad request: blank eventId, quantity 0. Expect 400 naming both fields.
+POST {{host}}/v1/usage
+Content-Type: application/json
+
+{
+  "eventId": "",
+  "tenantId": "{{tenant}}",
+  "metric": "seats",
+  "quantity": 0
+}
+
+### 8. Reverse a transaction. Paste a transactionId from step 5 below. Expect 201.
+### Then rerun step 4: balance drops by that amount. Rerun step 5: lines grew, nothing deleted.
+POST {{host}}/v1/ledger/PASTE-TRANSACTION-ID-HERE/reverse
+Content-Type: application/json
+
+{
+  "tenantId": "{{tenant}}",
+  "idempotencyKey": "rev-001",
+  "reason": "goodwill credit"
+}
+
+### 9. Reverse the same transaction again. Expect 409: a transaction is reversed once.
+POST {{host}}/v1/ledger/PASTE-TRANSACTION-ID-HERE/reverse
+Content-Type: application/json
+
+{
+  "tenantId": "{{tenant}}",
+  "idempotencyKey": "rev-002",
+  "reason": "again"
+}
+
+### 10. Health.
+GET {{host}}/actuator/health

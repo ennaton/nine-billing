@@ -9,7 +9,7 @@ Every other Nine service is about scale and distribution. This one is about **no
 
 ## Status
 
-Pre-alpha. The ledger core is in place and its invariants are proven by tests against a real Postgres. Metering (usage in, charge out) and the query API are next.
+Alpha. The ledger core and its nine invariants are proven by tests against a real Postgres. Metering (usage event in, priced ledger entry out) and the HTTP surface are in place and tested end to end over HTTP. Not yet done: reconciliation job, tenant RLS policies, a real auth layer.
 
 ## The invariants
 
@@ -57,6 +57,39 @@ Needs a JDK 17 and Docker (for the tests).
 
 Health: `GET /actuator/health`.
 
+## Try it
+
+Start the service, then walk the whole API in order:
+
+- **IntelliJ:** open [`http/billing.http`](http/billing.http) and click the green arrow next to each request.
+- **Postman:** import [`http/nine-billing.postman_collection.json`](http/nine-billing.postman_collection.json).
+- **curl:**
+
+```bash
+T=11111111-1111-1111-1111-111111111111
+curl -s -X POST localhost:18081/v1/usage -H 'content-type: application/json' \
+  -d "{\"eventId\":\"evt-001\",\"tenantId\":\"$T\",\"metric\":\"agent_seconds\",\"quantity\":120}"
+# {"transactionId":"...","chargedMinor":240,"currency":"GBP","replayed":false}      201
+
+curl -s localhost:18081/v1/tenants/$T/balance
+# {"tenantId":"...","owedMinor":240,"currency":"GBP","display":"2.40 GBP"}
+```
+
+Send the same `eventId` again and you get `200`, `replayed: true`, the same `transactionId`, and the balance does not move.
+
+## API
+
+| Method | Path | Does |
+|---|---|---|
+| `POST` | `/v1/usage` | Price a usage event and post it to the ledger. `201` on first sight, `200` + `replayed: true` on a retry |
+| `GET` | `/v1/tenants/{id}/balance` | What the tenant owes (receivable balance) |
+| `GET` | `/v1/tenants/{id}/ledger?limit=` | Recent ledger lines, newest first |
+| `POST` | `/v1/ledger/{txId}/reverse` | Reverse a transaction. A new transaction; nothing deleted. Second attempt is `409` |
+
+Errors are `application/problem+json`: `400` fix the request, `422` well formed but cannot be honored (unknown metric, unbalanced), `409` already done or conflicts, `404` no such transaction.
+
+Prices live in `price_plans` (V2 migration): `events_ingested`, `agent_seconds`, `seats`. Minor units, GBP.
+
 ## Layout
 
 ```
@@ -64,11 +97,17 @@ src/main/java/co/nine/billing/
   domain/          Money, Posting, LedgerEntry, Direction, AccountType, exceptions
   application/     LedgerService: post (idempotent), reverse, balance
   infrastructure/  LedgerRepository: JDBC against the schema
-  api/             HTTP surface (next)
+  metering/        UsageEvent, PricePlan, Charge, MeteringService, MeteringRepository
+  api/             BillingController, ApiExceptionHandler (problem+json)
 src/main/resources/db/migration/
   V1__ledger.sql   accounts, ledger_transactions, postings, triggers, balance view
+  V2__metering.sql price_plans, usage_charges
 src/test/java/co/nine/billing/
-  LedgerInvariantsTest.java
+  LedgerInvariantsTest.java   the nine invariants against real Postgres
+  MeteringHttpTest.java       the API driven over HTTP, end to end
+http/
+  billing.http                       IntelliJ HTTP client walkthrough
+  nine-billing.postman_collection.json
 ```
 
 ## License

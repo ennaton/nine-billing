@@ -1,0 +1,264 @@
+{
+  "info": {
+    "name": "Nine billing",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Walk the billing API top to bottom. Set txId from step 5 before steps 8 and 9."
+  },
+  "item": [
+    {
+      "name": "1. Usage: 120 agent_seconds (201, 240 minor)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{host}}/v1/usage",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "usage"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"evt-001\",\n  \"tenantId\": \"{{tenant}}\",\n  \"metric\": \"agent_seconds\",\n  \"quantity\": 120\n}"
+        }
+      }
+    },
+    {
+      "name": "2. Same event again (200, replayed true, same tx)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{host}}/v1/usage",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "usage"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"evt-001\",\n  \"tenantId\": \"{{tenant}}\",\n  \"metric\": \"agent_seconds\",\n  \"quantity\": 120\n}"
+        }
+      }
+    },
+    {
+      "name": "3. Usage: 3 seats (201, 2700 minor)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{host}}/v1/usage",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "usage"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"evt-002\",\n  \"tenantId\": \"{{tenant}}\",\n  \"metric\": \"seats\",\n  \"quantity\": 3\n}"
+        }
+      }
+    },
+    {
+      "name": "4. Balance (owedMinor 2940)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{host}}/v1/tenants/{{tenant}}/balance",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "tenants",
+            "{{tenant}}",
+            "balance"
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. Ledger lines",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{host}}/v1/tenants/{{tenant}}/ledger?limit=20",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "tenants",
+            "{{tenant}}",
+            "ledger?limit=20"
+          ]
+        }
+      }
+    },
+    {
+      "name": "6. Unknown metric (422 problem+json)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{host}}/v1/usage",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "usage"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"evt-003\",\n  \"tenantId\": \"{{tenant}}\",\n  \"metric\": \"moon_landings\",\n  \"quantity\": 1\n}"
+        }
+      }
+    },
+    {
+      "name": "7. Bad request (400, names fields)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{host}}/v1/usage",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "usage"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"\",\n  \"tenantId\": \"{{tenant}}\",\n  \"metric\": \"seats\",\n  \"quantity\": 0\n}"
+        }
+      }
+    },
+    {
+      "name": "8. Reverse (paste tx id) (201)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{host}}/v1/ledger/{{txId}}/reverse",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "ledger",
+            "{{txId}}",
+            "reverse"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenantId\": \"{{tenant}}\",\n  \"idempotencyKey\": \"rev-001\",\n  \"reason\": \"goodwill credit\"\n}"
+        }
+      }
+    },
+    {
+      "name": "9. Reverse again (409)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{host}}/v1/ledger/{{txId}}/reverse",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "v1",
+            "ledger",
+            "{{txId}}",
+            "reverse"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenantId\": \"{{tenant}}\",\n  \"idempotencyKey\": \"rev-002\",\n  \"reason\": \"again\"\n}"
+        }
+      }
+    },
+    {
+      "name": "10. Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{host}}/actuator/health",
+          "host": [
+            "{{host}}"
+          ],
+          "path": [
+            "actuator",
+            "health"
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "host",
+      "value": "http://localhost:18081"
+    },
+    {
+      "key": "tenant",
+      "value": "11111111-1111-1111-1111-111111111111"
+    },
+    {
+      "key": "txId",
+      "value": "PASTE-FROM-STEP-5"
+    }
+  ]
+}
