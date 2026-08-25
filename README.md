@@ -1,9 +1,9 @@
 # nine-billing
 
-[![ci](https://github.com/canakyuz/nine-billing/actions/workflows/ci.yml/badge.svg)](https://github.com/canakyuz/nine-billing/actions/workflows/ci.yml)
+[![ci](https://github.com/ennaton/nine-billing/actions/workflows/ci.yml/badge.svg)](https://github.com/ennaton/nine-billing/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Usage metering and a double-entry ledger for [Nine](https://github.com/canakyuz/nine-docs). Java 17, Spring Boot, PostgreSQL.
+Usage metering and a double-entry ledger for [Nine](https://github.com/ennaton/nine-docs). Java 17, Spring Boot, PostgreSQL.
 
 Every other Nine service is about scale and distribution. This one is about **not being wrong**. It turns usage events into charges and writes them to a ledger that refuses to lie: unbalanced, duplicated, mutated or mis-currencied entries never reach disk, and the database is what says no, not application code.
 
