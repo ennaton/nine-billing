@@ -3,7 +3,11 @@
 
 @host = http://localhost:18081
 @tenant = 11111111-1111-1111-1111-111111111111
-@apiKey = REMOVED-LEAKED-KEY
+@apiKey = PASTE-THE-KEY-FROM-STEP-0-HERE
+
+### Never commit a real key into this file. Keys minted below are live against
+### whatever service they were minted on; paste yours in, use it, and leave the
+### placeholder in place when you commit. The pre-commit hook enforces this.
 
 ### 0. Mint the tenant's API key. Needs the bootstrap secret the service was started with:
 ###    NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun
