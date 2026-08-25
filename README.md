@@ -58,8 +58,8 @@ Two of them are checked twice: once in Java so the caller gets a clear error bef
 Needs a JDK 17 and Docker (for the tests).
 
 ```bash
-# local Postgres from nine-infra (port 15432, database nine_billing)
-(cd ../infra && docker compose up -d postgres)
+# local Postgres from nine-platform (port 15432, database nine_billing)
+(cd ../platform && docker compose up -d postgres)
 
 NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun   # migrates with Flyway, serves on :18081
 ./gradlew test             # spins up its own Postgres via Testcontainers

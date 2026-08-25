@@ -3,7 +3,7 @@
 
 @host = http://localhost:18081
 @tenant = 11111111-1111-1111-1111-111111111111
-@apiKey = PASTE-FROM-STEP-0
+@apiKey = REMOVED-LEAKED-KEY
 
 ### 0. Mint the tenant's API key. Needs the bootstrap secret the service was started with:
 ###    NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun
