@@ -6,7 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -24,8 +25,18 @@ public class ReconciliationService {
 
     private final ReconciliationRepository repo;
 
-    public ReconciliationService(ReconciliationRepository repo) {
+    /**
+     * An explicit TransactionTemplate rather than {@code @Transactional} on a
+     * method this class calls itself: a self invocation does not pass through
+     * the proxy, so the annotation would be silently ignored. Writing the
+     * boundary out also makes the ordering visible, and the ordering is the
+     * whole point here.
+     */
+    private final TransactionTemplate tx;
+
+    public ReconciliationService(ReconciliationRepository repo, PlatformTransactionManager txManager) {
         this.repo = repo;
+        this.tx = new TransactionTemplate(txManager);
     }
 
     public record Report(long runId, long chargesChecked, List<Finding> findings, boolean clean) {}
@@ -47,12 +58,24 @@ public class ReconciliationService {
      * row. Without it, RLS would show the job zero rows and it would report
      * "clean" forever: the silent failure this whole design exists to avoid.
      */
-    @Transactional
+    /**
+     * Operator context is established <em>outside</em> the transaction, and the
+     * transactional work is a separate call.
+     *
+     * <p>The previous shape had {@code @Transactional} on this method and set
+     * operator context in its body. That is too late: Spring acquires the
+     * connection when the transaction opens, and {@code TenantAwareDataSource}
+     * writes the GUCs at that moment, before the body runs. The job therefore
+     * ran with whatever tenant happened to be bound, and with none bound it saw
+     * zero rows and reported "clean" forever, which is precisely the silent
+     * failure this design exists to prevent.
+     *
+     * <p>A test that binds no tenant, tampers with the ledger and expects a
+     * finding is what catches this. The earlier test passed only because it
+     * left a tenant bound, so it was measuring tenant context, not operator.
+     */
     public Report run() {
-        // The GUC is bound when the connection is checked out, which happens
-        // on the first statement inside this transaction. Setting operator
-        // context here, before that first statement, is therefore in time.
-        return OperatorContext.run(this::compare);
+        return OperatorContext.run(() -> tx.execute(status -> compare()));
     }
 
     private Report compare() {

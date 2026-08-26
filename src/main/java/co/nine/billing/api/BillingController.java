@@ -89,9 +89,30 @@ public class BillingController {
         return new ReverseResponse(reversal, transactionId);
     }
 
+    /**
+     * Formats minor units for display.
+     *
+     * <p>Not every currency has a minor unit. JPY, KWD and BHD report zero
+     * fraction digits, and the obvious format string becomes "%d.%00d", where
+     * a width of zero is not a legal format specifier. The previous version of
+     * this method threw on any balance denominated in one of them, reachable
+     * from ?currency=JPY. A currency with no decimals gets no decimal point.
+     *
+     * <p>Currencies with more than two digits are handled by the same path
+     * rather than assuming two: JOD and TND have three.
+     */
     private static String display(Money m) {
         int digits = m.currency().getDefaultFractionDigits();
-        long scale = 1; for (int i = 0; i < digits; i++) scale *= 10;
-        return String.format("%d.%0" + digits + "d %s", m.minor() / scale, Math.abs(m.minor() % scale), m.currency());
+        if (digits <= 0) {
+            return m.minor() + " " + m.currency();
+        }
+        long scale = 1;
+        for (int i = 0; i < digits; i++) scale *= 10;
+        long units = m.minor() / scale;
+        long fraction = Math.abs(m.minor() % scale);
+        // A negative balance between zero and one minor unit still needs its
+        // sign: -0.40 must not print as 0.40.
+        String sign = (m.minor() < 0 && units == 0) ? "-" : "";
+        return String.format("%s%d.%0" + digits + "d %s", sign, units, fraction, m.currency());
     }
 }

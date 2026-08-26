@@ -169,12 +169,22 @@ class TenantIsolationTest extends PostgresTestBase {
     }
 
     @Test @Order(12)
-    @DisplayName("reconciliation still sees every tenant: operator context crosses RLS on purpose")
-    void reconciliationCrossesTenants() {
-        ResponseEntity<Map> res = as(keyA).postForEntity("/v1/reconciliation/run", null, Map.class);
-        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.OK);
-        // A's charge plus MeteringHttpTest's and others share this DB; at least A's must be counted.
-        assertThat(((Number) res.getBody().get("chargesChecked")).longValue()).isGreaterThanOrEqualTo(1);
-        assertThat(res.getBody()).containsEntry("clean", true);
+    @DisplayName("reconciliation is operator only: a tenant key cannot run it or read findings")
+    void reconciliationIsOperatorOnly() {
+        // Was /v1/reconciliation/run, reachable by any valid key. It is now an
+        // operator endpoint, and a tenant key is not an operator credential.
+        assertThat(as(keyA).postForEntity("/v1/reconciliation/run", null, Map.class).getStatusCode())
+            .isEqualTo(HttpStatus.NOT_FOUND);
+
+        HttpHeaders h = new HttpHeaders();
+        h.set("X-Bootstrap-Secret", "test-bootstrap-secret");
+        ResponseEntity<Map> run = raw.exchange("/admin/reconciliation/run",
+            org.springframework.http.HttpMethod.POST, new HttpEntity<>(h), Map.class);
+        assertThat(run.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // The counts a tenant may see carry no tenant identity.
+        ResponseEntity<String> runs = as(keyA).getForEntity("/v1/reconciliation/runs", String.class);
+        assertThat(runs.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(runs.getBody()).doesNotContain(B.toString());
     }
 }
