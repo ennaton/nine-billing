@@ -2,7 +2,7 @@ package co.nine.billing;
 
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * One Postgres for the whole suite, with the two-role setup the service runs
@@ -12,7 +12,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
  */
 public abstract class PostgresTestBase {
 
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
+    // Testcontainers 2.0 dropped the self-referential generic: the class is
+    // no longer PostgreSQLContainer<SELF>, so the wildcard and the diamond go.
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
 
     static {
         POSTGRES.start();

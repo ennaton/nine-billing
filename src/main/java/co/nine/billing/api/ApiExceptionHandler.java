@@ -23,12 +23,12 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(UnknownMetricException.class)
     ProblemDetail unknownMetric(UnknownMetricException e) {
-        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "Unknown metric", e.getMessage());
+        return problem(HttpStatus.UNPROCESSABLE_CONTENT, "Unknown metric", e.getMessage());
     }
 
     @ExceptionHandler({UnbalancedEntryException.class, IllegalArgumentException.class})
     ProblemDetail badEntry(RuntimeException e) {
-        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "Entry rejected", e.getMessage());
+        return problem(HttpStatus.UNPROCESSABLE_CONTENT, "Entry rejected", e.getMessage());
     }
 
     @ExceptionHandler(DuplicateEntryException.class)

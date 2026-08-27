@@ -1,6 +1,6 @@
 plugins {
     java
-    id("org.springframework.boot") version "3.4.1"
+    id("org.springframework.boot") version "4.1.1"
     id("io.spring.dependency-management") version "1.1.7"
 }
 
@@ -20,23 +20,35 @@ repositories {
     mavenCentral()
 }
 
-// Spring's dependency-management plugin decides Testcontainers' version and
-// wins over Gradle platforms. Its own override channel is this property.
-extra["testcontainers.version"] = "1.21.3"
+// Testcontainers is no longer pinned here. Spring Boot 4.1.1 manages 2.0.5,
+// which is the first line that carries the renamed testcontainers-* artifacts.
+// If a pin is ever needed again, the dependency-management plugin's override
+// channel is extra["testcontainers.version"].
 
 dependencies {
-    implementation("org.springframework.boot:spring-boot-starter-web")
+    implementation("org.springframework.boot:spring-boot-starter-webmvc")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
-    implementation("org.flywaydb:flyway-core")
+    // Flyway became a first-class starter in Boot 4.0. The starter brings
+    // flyway-core; the Postgres dialect stays an explicit dependency because
+    // the starter does not pull it.
+    implementation("org.springframework.boot:spring-boot-starter-flyway")
     implementation("org.flywaydb:flyway-database-postgresql")
 
     runtimeOnly("org.postgresql:postgresql")
 
-    testImplementation("org.springframework.boot:spring-boot-starter-test")
-    testImplementation("org.testcontainers:junit-jupiter")
-    testImplementation("org.testcontainers:postgresql")
+    // Boot 4.0 split test support per technology. This starter brings
+    // spring-boot-starter-test and spring-boot-resttestclient with it, which
+    // is where TestRestTemplate now lives.
+    testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
+    // The webmvc test starter brings spring-boot-resttestclient but not
+    // spring-boot-restclient, and RestTemplateBuilder lives in the latter.
+    testImplementation("org.springframework.boot:spring-boot-restclient")
+    // Testcontainers 2.0 renamed every module to a testcontainers- prefix and
+    // did not republish the old coordinates, so these names are not cosmetic.
+    testImplementation("org.testcontainers:testcontainers-junit-jupiter")
+    testImplementation("org.testcontainers:testcontainers-postgresql")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -47,7 +59,10 @@ tasks.withType<JavaCompile> {
 tasks.withType<Test> {
     useJUnitPlatform()
     // Docker 29 refuses API versions older than it advertises. Tell docker-java
-    // which one to use instead of letting it guess an old default.
+    // which one to use instead of letting it guess an old default. This pin was
+    // added against Testcontainers 1.20.x. 2.0 reworked Docker environment
+    // detection, so it is carried over unchanged on purpose and has to be
+    // re-checked against a real run before it is trusted or dropped.
     environment("DOCKER_API_VERSION", "1.44")
     testLogging {
         events("passed", "skipped", "failed")

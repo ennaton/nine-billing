@@ -6,9 +6,10 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.restclient.RestTemplateBuilder;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpStatus;
 import org.junit.jupiter.api.BeforeAll;
 import org.springframework.http.ResponseEntity;
@@ -24,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * HTTP, against a real Postgres. This is the Postman session, automated.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureTestRestTemplate
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class MeteringHttpTest extends PostgresTestBase {
 
@@ -49,7 +51,7 @@ class MeteringHttpTest extends PostgresTestBase {
             apiKey = (String) res.getBody().get("apiKey");
         }
         http = new TestRestTemplate(new RestTemplateBuilder()
-            .rootUri(raw.getRootUri())
+            .baseUri(raw.getRootUri())
             .defaultHeader("X-Api-Key", apiKey));
     }
 
@@ -91,7 +93,7 @@ class MeteringHttpTest extends PostgresTestBase {
         ResponseEntity<Map> res = http.postForEntity("/v1/usage", Map.of(
             "eventId", "evt-2", "tenantId", TENANT, "metric", "moon_landings", "quantity", 1), Map.class);
 
-        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_CONTENT);
         assertThat(res.getHeaders().getContentType().toString()).contains("problem+json");
         assertThat(res.getBody()).containsEntry("title", "Unknown metric");
 
