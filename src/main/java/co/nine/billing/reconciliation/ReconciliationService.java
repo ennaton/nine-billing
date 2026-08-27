@@ -54,11 +54,6 @@ public class ReconciliationService {
     }
 
     /**
-     * Runs with operator context so the cross-tenant comparison sees every
-     * row. Without it, RLS would show the job zero rows and it would report
-     * "clean" forever: the silent failure this whole design exists to avoid.
-     */
-    /**
      * Operator context is established <em>outside</em> the transaction, and the
      * transactional work is a separate call.
      *
