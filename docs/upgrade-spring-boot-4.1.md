@@ -270,18 +270,52 @@ plus `spring-boot-starter`, and `spring-boot-starter-test` at 4.1.1 still brings
 JUnit Jupiter, Mockito, Hamcrest and `spring-test`, so no test dependency was silently
 dropped.
 
-## What is still open
+## Result
 
-Compilation proves that every type resolves. It proves nothing about behaviour. Three
-things can still fail when the suite runs:
+The suite was run on 2026-08-27 after the changes landed, on JDK 17 against Docker 29.7.2
+serving API 1.55.
 
-1. **The `DOCKER_API_VERSION` pin.** Carried over untouched from the Testcontainers
-   1.20.x era. 2.0 reworked Docker environment detection. This is the first thing to
-   suspect if containers do not start at all.
-2. **Jackson 3 serialization.** The likely cause if containers start and individual HTTP
-   assertions fail instead. `spring-boot-jackson2` is the escape hatch.
-3. **Flyway 12.** See the note above. A migration failure here is a Flyway question, not
-   a Spring Boot one.
+```
+35 tests, 0 failures, 0 errors, 0 skipped
+```
 
-The task is done when the suite is green and the application serves a request. Neither has
-been shown yet.
+Resolved on the test classpath, checked rather than assumed:
+
+```
+spring-boot        4.1.1
+spring-core        7.0.9
+testcontainers     2.0.5
+flyway-core       12.4.0
+junit-jupiter      6.0.3
+jackson            3.1.5   under tools.jackson, not com.fasterxml
+```
+
+The three risks named above are retired, each by the run rather than by argument:
+
+1. **The `DOCKER_API_VERSION` pin holds.** Testcontainers 2.0.5 starts containers with it
+   in place against Docker 29.7.2. It is now a known-good value rather than a carried-over
+   guess, though still an unexamined one: nobody has checked whether removing it also
+   works.
+2. **Jackson 3 broke nothing.** Every HTTP assertion in `MeteringHttpTest`,
+   `TenantIsolationTest` and `ReviewFindingsTest` passes unchanged, including the
+   `problem+json` bodies and the `UUID` and money fields. `spring-boot-jackson2` is not
+   needed.
+3. **Flyway 12 migrates cleanly.** All five migrations run in the test path as the
+   container owner, which is the same code path production uses.
+
+The application starting is covered by the same run: the three `@SpringBootTest` classes
+boot the full context and serve over HTTP on a random port through Tomcat, and the tests
+drive it as a client would.
+
+## Still not covered
+
+- **Java 25.** Everything above is green on Java 17. BI1.1 moves the toolchain to 25, and
+  that requires Gradle 9.1.0 or later: Gradle 8.14, which this repo uses, supports Java 24
+  as a toolchain at most. `.github/workflows/ci.yml` also pins `java-version: '17'` and
+  has no toolchain auto-provisioning, so it needs the same change. None of that is BI1.2.
+- **The `DOCKER_API_VERSION` pin as a question rather than a value.** It works. Whether it
+  is still needed is unknown, and the honest way to find out is to delete it and run the
+  suite once.
+- **The 52 `rawtypes` and `unchecked` warnings.** Untouched, pre-existing, and unrelated to
+  this upgrade. Worth a separate pass, since a build that runs `-Xlint:all` and then
+  ignores 52 of its findings is not really running a lint gate.
