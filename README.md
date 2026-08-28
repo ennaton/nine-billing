@@ -55,7 +55,9 @@ Two of them are checked twice: once in Java so the caller gets a clear error bef
 
 ## Run
 
-Needs a JDK 17 and Docker (for the tests).
+Needs a JDK 17, Docker (for the tests), and **Postgres 15 or later**. The schema sets
+`security_invoker` on the balances view, an option that does not exist before 15, so an
+older server fails during migration rather than misbehaving at runtime.
 
 ```bash
 # local Postgres from nine-platform (port 15432, database nine_billing)
@@ -65,7 +67,10 @@ NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun   # migrates with Flyway, 
 ./gradlew test             # spins up its own Postgres via Testcontainers
 ```
 
-Health: `GET /actuator/health`. Everything under `/v1` needs `X-Api-Key`; mint one with `POST /admin/keys` and the bootstrap secret (step 0 in `http/billing.http`).
+Health: `GET /actuator/health`. The key filter denies by default: every request needs
+`X-Api-Key` except `/actuator` and `/admin`, and `/admin` carries its own bootstrap-secret
+check inside the handler. Mint a key with `POST /admin/keys` and the bootstrap secret
+(step 0 in `http/billing.http`).
 
 ## Try it
 
