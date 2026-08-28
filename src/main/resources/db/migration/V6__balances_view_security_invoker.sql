@@ -1,0 +1,15 @@
+-- V1 created account_balances without security_invoker, and a view defaults to
+-- the privileges of its owner. The owner here is a superuser, so the view read
+-- its base tables as postgres and FORCE ROW LEVEL SECURITY never applied to it:
+-- with a tenant bound, accounts returned 2 rows and the view returned 7. With no
+-- tenant bound at all the tables returned 0 and the view still returned 7, which
+-- is the fail-closed case TenantIsolationTest asserted on three tables and not on
+-- the view.
+--
+-- security_invoker makes the view read as the caller, so nine_app sees exactly
+-- what nine_app is allowed to see and the same policies apply.
+--
+-- Blast radius: the view has one reader in the codebase, LedgerRepository.balanceMinor.
+-- Reconciliation queries usage_charges, postings and ledger_transactions directly,
+-- so the operator path is untouched.
+ALTER VIEW account_balances SET (security_invoker = true);

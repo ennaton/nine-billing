@@ -93,13 +93,19 @@ class TenantIsolationTest extends PostgresTestBase {
     }
 
     @Test @Order(4)
-    @DisplayName("DB 3: with no tenant bound at all, every table is empty (fail-closed)")
+    @DisplayName("DB 3: with no tenant bound, every table and the balances view is empty (fail-closed)")
     void noContextSeesNothing() {
         TenantContext.clear();   // the recycled-connection case: GUC left as ''
         Long a = jdbc.queryForObject("SELECT count(*) FROM accounts", Long.class);
         Long t = jdbc.queryForObject("SELECT count(*) FROM ledger_transactions", Long.class);
         Long u = jdbc.queryForObject("SELECT count(*) FROM usage_charges", Long.class);
+        // A view runs with its owner's privileges unless it is security_invoker,
+        // which is how account_balances stayed outside this assertion while
+        // returning every tenant's rows. V6 set the option; this line is what
+        // stops it coming back.
+        Long b = jdbc.queryForObject("SELECT count(*) FROM account_balances", Long.class);
         assertThat(a).isZero(); assertThat(t).isZero(); assertThat(u).isZero();
+        assertThat(b).isZero();
     }
 
     @Test @Order(5)
@@ -118,9 +124,18 @@ class TenantIsolationTest extends PostgresTestBase {
         assertThat(n).isEqualTo(1);
     }
 
+    @Test @Order(7)
+    @DisplayName("DB 6: with a tenant bound, the balances view agrees with the table it derives from")
+    void viewAgreesWithItsTable() {
+        TenantContext.bind(A);
+        Long rows = jdbc.queryForObject("SELECT count(*) FROM accounts", Long.class);
+        Long view = jdbc.queryForObject("SELECT count(*) FROM account_balances", Long.class);
+        assertThat(view).isEqualTo(rows);
+    }
+
     // ---- http layer ---------------------------------------------------------------
 
-    @Test @Order(7)
+    @Test @Order(8)
     @DisplayName("HTTP: no key is 401 problem+json")
     void noKeyIs401() {
         ResponseEntity<Map> res = raw.getForEntity("/v1/tenants/" + A + "/balance", Map.class);
@@ -128,14 +143,14 @@ class TenantIsolationTest extends PostgresTestBase {
         assertThat(res.getHeaders().getContentType().toString()).contains("problem+json");
     }
 
-    @Test @Order(8)
+    @Test @Order(9)
     @DisplayName("HTTP: a wrong key is 401, same body, no hint whether the key format was close")
     void wrongKeyIs401() {
         ResponseEntity<Map> res = as("nk_definitely-not-a-key").getForEntity("/v1/tenants/" + A + "/balance", Map.class);
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
-    @Test @Order(9)
+    @Test @Order(10)
     @DisplayName("HTTP: tenant B asking for tenant A's balance is 404, not 403: existence is not disclosed")
     void crossTenantIs404() {
         ResponseEntity<Map> res = as(keyB).getForEntity("/v1/tenants/" + A + "/balance", Map.class);
@@ -144,7 +159,7 @@ class TenantIsolationTest extends PostgresTestBase {
         assertThat(ledger.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
-    @Test @Order(10)
+    @Test @Order(11)
     @DisplayName("HTTP: tenant B cannot post usage in tenant A's name, and cannot reverse A's transaction")
     void crossTenantWritesAre404() {
         ResponseEntity<Map> usage = as(keyB).postForEntity("/v1/usage", Map.of(
@@ -160,7 +175,7 @@ class TenantIsolationTest extends PostgresTestBase {
         assertThat(bal.getBody()).containsEntry("owedMinor", 900);
     }
 
-    @Test @Order(11)
+    @Test @Order(12)
     @DisplayName("HTTP: even with a valid key for B, naming B in the body but A in the path is 404")
     void mixedIdentityIs404() {
         // The guard checks the tenant the request names against the key's tenant, every time.
@@ -170,7 +185,7 @@ class TenantIsolationTest extends PostgresTestBase {
         assertThat(rev.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
-    @Test @Order(12)
+    @Test @Order(13)
     @DisplayName("reconciliation is operator only: a tenant key cannot run it or read findings")
     void reconciliationIsOperatorOnly() {
         // Was /v1/reconciliation/run, reachable by any valid key. It is now an
