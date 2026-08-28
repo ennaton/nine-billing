@@ -59,8 +59,10 @@ public class MeteringService {
             Optional.empty());
 
         UUID txId = ledger.post(entry);
-        repo.recordCharge(event, amount.minor(), plan.currency(), txId);
-        return new Charge(txId, amount, false);
+        // The check above can lose a race, so whether this is a first charge is
+        // decided by the write, not by the read that came before it.
+        boolean recorded = repo.recordCharge(event, amount.minor(), plan.currency(), txId);
+        return new Charge(txId, amount, !recorded);
     }
 
     /** How much the tenant currently owes: the receivable balance. */
