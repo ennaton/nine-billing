@@ -156,4 +156,46 @@ class IdempotencyTest extends PostgresTestBase {
             pool.shutdownNow();
         }
     }
+
+    @Test
+    @DisplayName("a replay reports what was charged, not what the request would cost now")
+    void replayReportsTheStoredCharge() {
+        ResponseEntity<Map<String, Object>> first = usage("price-drift", 10);
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(first.getBody()).containsEntry("chargedMinor", 20);
+
+        // The same event, ten times the quantity. The event was charged once and
+        // the ledger holds that number, so it is the number the caller is owed.
+        // Answering with what this request would have cost describes a charge
+        // that was never made, and reconciliation cannot see it because the rows
+        // agree with each other: only the response is wrong.
+        ResponseEntity<Map<String, Object>> replay = usage("price-drift", 100);
+        assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(replay.getBody())
+            .containsEntry("replayed", true)
+            .containsEntry("transactionId", first.getBody().get("transactionId"))
+            .containsEntry("chargedMinor", 20)
+            .containsEntry("currency", "GBP");
+    }
+
+    @Test
+    @DisplayName("a replay does not depend on the metric still being priced")
+    void replayDoesNotConsultCurrentPricing() {
+        ResponseEntity<Map<String, Object>> first = usage("metric-drift", 10);
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        // The same eventId, carrying a metric that has no price plan at all. The
+        // charge already happened; what the catalogue says today cannot unmake
+        // it. A replay that has to price the request first is a replay that can
+        // be refused by a change made after the fact.
+        ResponseEntity<Map<String, Object>> replay = http.exchange("/v1/usage", HttpMethod.POST,
+            new HttpEntity<>(Map.of("eventId", "metric-drift", "tenantId", tenant,
+                "metric", "no_such_metric_at_all", "quantity", 10)), JSON);
+
+        assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(replay.getBody())
+            .containsEntry("replayed", true)
+            .containsEntry("transactionId", first.getBody().get("transactionId"))
+            .containsEntry("chargedMinor", 20);
+    }
 }

@@ -1,6 +1,7 @@
 package co.nine.billing.metering;
 
 import co.nine.billing.domain.AccountType;
+import co.nine.billing.domain.Money;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -44,10 +45,28 @@ public class MeteringRepository {
             "SELECT id FROM accounts WHERE tenant_id = ? AND code = ?", UUID.class, tenantId, code);
     }
 
-    public Optional<UUID> chargeFor(UUID tenantId, String eventId) {
-        return jdbc.query(
-            "SELECT transaction_id FROM usage_charges WHERE tenant_id = ? AND event_id = ?",
-            rs -> rs.next() ? Optional.of(rs.getObject(1, UUID.class)) : Optional.empty(),
+    /** What an event was actually charged, as opposed to what it would cost now. */
+    public record RecordedCharge(UUID transactionId, Money amount) {}
+
+    /**
+     * The charge already on record for this event, if there is one.
+     *
+     * <p>Returns the stored amount and currency, not just the transaction id,
+     * because a replay is answered from what happened rather than from what the
+     * request in hand would cost. Those are the same number only until a price
+     * changes or a client retries with a different quantity.
+     */
+    public Optional<RecordedCharge> chargeFor(UUID tenantId, String eventId) {
+        return jdbc.query("""
+            SELECT transaction_id, charged_minor, currency
+              FROM usage_charges
+             WHERE tenant_id = ? AND event_id = ?
+            """,
+            rs -> rs.next()
+                ? Optional.of(new RecordedCharge(
+                    rs.getObject(1, UUID.class),
+                    Money.of(rs.getLong(2), rs.getString(3).trim())))
+                : Optional.empty(),
             tenantId, eventId);
     }
 
