@@ -1,7 +1,6 @@
 package co.nine.billing.application;
 
 import co.nine.billing.domain.Direction;
-import co.nine.billing.domain.DuplicateEntryException;
 import co.nine.billing.domain.LedgerEntry;
 import co.nine.billing.domain.Posting;
 import co.nine.billing.infrastructure.LedgerRepository;
@@ -24,13 +23,15 @@ public class LedgerService {
      * Idempotent post. A replay of the same (tenant, key) returns the original
      * transaction id instead of failing, so a client that retries after a
      * network timeout gets the same answer it would have got the first time.
+     *
+     * <p>The replay is resolved inside the same statement that writes, so it
+     * holds under concurrency as well as after a timeout. It used to be resolved
+     * here, by catching the violation and reading the original afterwards, which
+     * cannot work: by then Postgres has aborted the transaction the read would
+     * have to run in.
      */
     public UUID post(LedgerEntry entry) {
-        try {
-            return repo.record(entry);
-        } catch (DuplicateEntryException e) {
-            return repo.transactionIdFor(entry.tenantId(), entry.idempotencyKey());
-        }
+        return repo.record(entry);
     }
 
     /**

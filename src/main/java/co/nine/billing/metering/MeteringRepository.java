@@ -51,14 +51,25 @@ public class MeteringRepository {
             tenantId, eventId);
     }
 
-    public void recordCharge(UsageEvent e, long chargedMinor, String currency, UUID txId) {
-        jdbc.update("""
+    /**
+     * Records the charge, and reports whether this call is the one that made it.
+     *
+     * <p>Returns false when the row was already there, which is a replay that got
+     * past the check in front of it: two callers with the same event both miss
+     * the lookup, and only one of them writes. The conflict is suppressed rather
+     * than raised for the same reason as in the ledger, this runs inside the
+     * caller's transaction and a raised violation would take that transaction
+     * down with it.
+     */
+    public boolean recordCharge(UsageEvent e, long chargedMinor, String currency, UUID txId) {
+        return jdbc.update("""
             INSERT INTO usage_charges
               (event_id, tenant_id, metric, quantity, charged_minor, currency, transaction_id, occurred_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (tenant_id, event_id) DO NOTHING
             """,
             e.eventId(), e.tenantId(), e.metric(), e.quantity(), chargedMinor, currency, txId,
-            java.sql.Timestamp.from(e.occurredAt()));
+            java.sql.Timestamp.from(e.occurredAt())) == 1;
     }
 
     public record LedgerLine(UUID transactionId, String description, Instant occurredAt,
