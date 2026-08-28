@@ -334,6 +334,84 @@ The 422 row is the direct proof for the constant that changed: `UNPROCESSABLE_CO
 puts the same `422` on the wire that `UNPROCESSABLE_ENTITY` did. Nothing a client sees
 moved.
 
+## BI1.3: Testcontainers and Docker compatibility
+
+The board frames this task as "resolve the clash with the Docker version", on the
+memory that 1.20.4 once clashed with Docker 29, and asks for 35 green tests in a time
+that is not worse than before. Measured on Docker 29.7.2, the answer is stronger than
+compatible: the previous setup does not run here at all.
+
+### The old stack cannot start a container on this daemon
+
+`origin/main` at `684499b`, which is Spring Boot 3.4.1 with Testcontainers 1.21.3, was
+checked out into a separate worktree and run on the same machine, the same daemon and the
+same JDK 17:
+
+```
+35 tests, 0 passed, 36 failed
+Could not find a valid Docker environment
+  UnixSocketClientProviderStrategy:    BadRequestException (Status 400)
+  DockerDesktopClientProviderStrategy: BadRequestException (Status 400)
+```
+
+The failure is in the static initializer of `PostgresTestBase`, so every test in the suite
+falls over before it starts.
+
+Three runs, to separate the cause from the workaround:
+
+| Baseline configuration | Result |
+|---|---|
+| Testcontainers 1.21.3, `DOCKER_API_VERSION=1.44` as committed | 0 of 35 |
+| Testcontainers 1.21.3, pin removed | 0 of 35 |
+| Testcontainers 1.21.3, pin restored | 0 of 35 |
+
+So the pin is not what saves it and not what breaks it. The client itself cannot talk to
+this daemon.
+
+### The daemon is not the problem either
+
+Asked directly over the socket:
+
+```
+/v1.24/version -> 400        ApiVersion    : 1.55
+/v1.41/version -> 200        MinAPIVersion : 1.40
+/v1.44/version -> 200        ServerVersion : 29.7.2
+/v1.55/version -> 200
+```
+
+Docker 29.7.2 serves 1.40 through 1.55. `1.44`, the value the build pinned, is inside that
+range and would have been accepted. The daemon still answers Testcontainers 1.21.3 with
+400, and setting `DOCKER_API_VERSION` does not change that. The exact version the bundled
+docker-java asks for was not isolated, so this note claims the effect and not the
+mechanism.
+
+The practical reading: `DOCKER_API_VERSION=1.44` was a workaround that had stopped
+working. Deleting it in this branch removed a line that was doing nothing, which is why
+the suite is green without it.
+
+### The new stack, measured
+
+Testcontainers 2.0.5, no pin, three consecutive runs after a discarded warm-up:
+
+| Measure | Value |
+|---|---|
+| Wall clock, `./gradlew test --rerun-tasks` | 4.8s, 4.8s, 4.8s |
+| Test execution, summed from the JUnit reports | 0.72s |
+| `postgres:16-alpine` container start | `PT0.724695S` |
+| Result | 35 tests, 0 failures, 0 errors |
+
+The container is a real one on a random port (`jdbc:postgresql://localhost:63485/test`),
+not the compose Postgres on 15432, and Ryuk 0.14.0 reaps it afterwards. CI runs the same
+suite on `ubuntu-latest` in 1m27s for the whole job, which includes checkout, JDK setup,
+dependency resolution and `build -x test` before the tests.
+
+### On "not longer than before"
+
+There is no before to compare against on this daemon. The honest statement is not "the
+suite is as fast as it was", it is that the suite runs at all again, in 4.8s, where the
+previous configuration produces nothing. Anyone on Docker 29 was unable to run these
+tests before this branch.
+
 ## Still not covered
 
 - **Java 25.** Everything above is green on Java 17. BI1.1 moves the toolchain to 25, and
