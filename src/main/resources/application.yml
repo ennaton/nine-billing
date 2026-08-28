@@ -31,8 +31,15 @@ nine:
 management:
   endpoints:
     web:
+      # metrics is deliberately not published. http.server.requests counts by
+      # URI, so a reachable metrics endpoint reports how often /admin/keys was
+      # called and with what outcome, which is an oracle for guessing the
+      # bootstrap secret. Putting a key in front of it narrows that to anyone
+      # holding any tenant key, which is not closing it. Nothing consumes this
+      # endpoint today; when BI7 needs real metrics they leave over OTel rather
+      # than a scraped URL.
       exposure:
-        include: health,info,metrics
+        include: health,info
   endpoint:
     health:
       probes:
