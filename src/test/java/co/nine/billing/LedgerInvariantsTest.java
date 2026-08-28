@@ -93,6 +93,29 @@ class LedgerInvariantsTest extends PostgresTestBase {
         assertThat(count("SELECT count(*) FROM ledger_transactions WHERE id = ?", tx)).isZero();
     }
 
+    @Test @DisplayName("2c. two currencies that net to zero are still unbalanced, and Postgres says so")
+    void crossCurrencyNettingIsRefused() {
+        // 100.00 GBP owed and 100.00 USD earned is not a balanced entry, it is two
+        // half entries in different books. Each posting sits on an account of its
+        // own currency, so postings_currency_matches_account is satisfied and does
+        // not catch it: that constraint ties a posting to its account, not the two
+        // sides of a transaction to each other. The balance is what has to notice,
+        // and it only notices if it is computed per currency.
+        UUID tx = UUID.randomUUID();
+        assertThatThrownBy(() -> jdbc.execute((java.sql.Connection c) -> {
+            c.setAutoCommit(false);
+            try (var st = c.createStatement()) {
+                st.execute("INSERT INTO ledger_transactions (id, tenant_id, idempotency_key, description, occurred_at) VALUES ('"
+                    + tx + "','" + tenant + "','raw-cross-currency','two books', now())");
+                st.execute("INSERT INTO postings (transaction_id, account_id, direction, amount_minor, currency) VALUES ('"
+                    + tx + "','" + cash + "','DEBIT',10000,'GBP'),('" + tx + "','" + usdCash + "','CREDIT',10000,'USD')");
+            }
+            c.commit();
+            return null;
+        })).hasMessageContaining("ledger imbalance");
+        assertThat(count("SELECT count(*) FROM ledger_transactions WHERE id = ?", tx)).isZero();
+    }
+
     // ---- 3. idempotency ------------------------------------------------------------
 
     @Test @DisplayName("3. replaying an idempotency key returns the same transaction and posts nothing new")

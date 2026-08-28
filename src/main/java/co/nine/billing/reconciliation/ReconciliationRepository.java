@@ -61,18 +61,32 @@ public class ReconciliationRepository {
     }
 
     /** A transaction whose debits and credits do not sum to zero. The trigger should make this impossible. */
+    /**
+     * Transactions whose postings do not come to zero, per currency.
+     *
+     * <p>Grouped by currency because a transaction is balanced only when it
+     * balances in every currency it touches. Summing across them lets a debit in
+     * one currency cancel a credit in another, which is the blind spot the
+     * balance trigger had and this query shared: the detector was written in the
+     * same shape as the thing it was supposed to detect the failure of. A cross
+     * currency transaction therefore reports once per offending currency, short
+     * in one and long in the other, rather than collapsing into a single number
+     * that reads as zero.
+     */
     public List<Finding> unbalancedTransactions() {
         return jdbc.query("""
-            SELECT t.tenant_id, t.id,
+            SELECT t.tenant_id, t.id, p.currency,
                    SUM(CASE WHEN p.direction = 'DEBIT' THEN p.amount_minor ELSE -p.amount_minor END) AS imbalance
               FROM ledger_transactions t
               JOIN postings p ON p.transaction_id = t.id
-             GROUP BY t.tenant_id, t.id
+             GROUP BY t.tenant_id, t.id, p.currency
             HAVING SUM(CASE WHEN p.direction = 'DEBIT' THEN p.amount_minor ELSE -p.amount_minor END) <> 0
+             ORDER BY t.id, p.currency
             """,
             (rs, i) -> new Finding("UNBALANCED_TX", rs.getObject(1, UUID.class), null,
-                rs.getObject(2, UUID.class), 0L, rs.getLong(3),
-                "debits minus credits = " + rs.getLong(3) + " minor; the balance trigger was bypassed"));
+                rs.getObject(2, UUID.class), 0L, rs.getLong(4),
+                "debits minus credits = " + rs.getLong(4) + " minor in " + rs.getString(3).trim()
+                    + "; the balance trigger was bypassed"));
     }
 
     public long recordRun(Instant started, Instant finished, long checked,

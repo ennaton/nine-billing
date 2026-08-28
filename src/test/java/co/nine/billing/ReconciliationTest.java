@@ -127,4 +127,60 @@ class ReconciliationTest extends PostgresTestBase {
             "SELECT clean FROM reconciliation_runs WHERE id = ?", Boolean.class, dirtyRunId));
         assertThat(dirtyFlag).isFalse();
     }
+
+    /**
+     * The detector shares its shape with the trigger that is supposed to make
+     * this impossible: debits minus credits, with no currency dimension. So the
+     * same two half entries the trigger has to refuse are the ones reconciliation
+     * has to find if they ever reach disk, and the only way they reach disk is
+     * the trigger being off.
+     */
+    @Test @Order(4)
+    @DisplayName("a transaction that nets to zero across two currencies is reported, not passed over")
+    void crossCurrencyImbalanceIsReported() {
+        JdbcTemplate su = superuser();
+        UUID other = UUID.randomUUID();
+        UUID gbpAccount = UUID.randomUUID();
+        UUID usdAccount = UUID.randomUUID();
+        UUID tx = UUID.randomUUID();
+
+        // Its own tenant, so the assertions the earlier tests make about theirs
+        // stay true however the classes end up ordered.
+        su.update("INSERT INTO accounts (id, tenant_id, code, type, currency) VALUES (?,?,?,?,?)",
+            gbpAccount, other, "cash", "ASSET", "GBP");
+        su.update("INSERT INTO accounts (id, tenant_id, code, type, currency) VALUES (?,?,?,?,?)",
+            usdAccount, other, "usd_cash", "ASSET", "USD");
+        su.update("INSERT INTO ledger_transactions (id, tenant_id, idempotency_key, description, occurred_at)"
+            + " VALUES (?,?,?,?, now())", tx, other, "cross-currency-probe", "two books");
+
+        su.execute("ALTER TABLE postings DISABLE TRIGGER postings_balance_check");
+        try {
+            su.update("INSERT INTO postings (transaction_id, account_id, direction, amount_minor, currency)"
+                + " VALUES (?,?,'DEBIT',10000,'GBP'), (?,?,'CREDIT',10000,'USD')",
+                tx, gbpAccount, tx, usdAccount);
+        } finally {
+            // finally rather than the happy path: a failure between the disable
+            // and the enable would leave the balance trigger off for every test
+            // that runs after this one, and they would fail for reasons that have
+            // nothing to do with the code they test.
+            su.execute("ALTER TABLE postings ENABLE TRIGGER postings_balance_check");
+        }
+
+        Report r = reconciliation.run();
+
+        assertThat(r.findings())
+            .as("the planted transaction must produce findings, or this test is vacuous")
+            .isNotEmpty();
+
+        // Two findings, not one. The transaction is short 100.00 in GBP and long
+        // 100.00 in USD, and collapsing that into a single number is how it went
+        // unnoticed in the first place.
+        assertThat(r.findings())
+            .filteredOn(f -> "UNBALANCED_TX".equals(f.kind()) && tx.equals(f.transactionId()))
+            .as("one finding per currency that does not balance")
+            .hasSize(2)
+            .extracting("detail", String.class)
+            .anySatisfy(detail -> assertThat(detail).contains("GBP"))
+            .anySatisfy(detail -> assertThat(detail).contains("USD"));
+    }
 }
