@@ -290,22 +290,49 @@ junit-jupiter      6.0.3
 jackson            3.1.5   under tools.jackson, not com.fasterxml
 ```
 
-The three risks named above are retired, each by the run rather than by argument:
+The three risks named above are retired, each by a run rather than by argument:
 
-1. **The `DOCKER_API_VERSION` pin holds.** Testcontainers 2.0.5 starts containers with it
-   in place against Docker 29.7.2. It is now a known-good value rather than a carried-over
-   guess, though still an unexamined one: nobody has checked whether removing it also
-   works.
+1. **The `DOCKER_API_VERSION` pin was not needed and is gone.** It was added because
+   Testcontainers 1.20.x guessed an API version Docker 29 refused. Removing it and
+   re-running the suite gives the same 35 green: 2.0.5 negotiates correctly on its own.
+   A workaround that outlives the thing it worked around is just a hidden assumption, so
+   it was deleted rather than carried. Verified on Docker 29.7.2 locally; CI runs a
+   different daemon and will confirm or deny it there.
 2. **Jackson 3 broke nothing.** Every HTTP assertion in `MeteringHttpTest`,
    `TenantIsolationTest` and `ReviewFindingsTest` passes unchanged, including the
    `problem+json` bodies and the `UUID` and money fields. `spring-boot-jackson2` is not
    needed.
-3. **Flyway 12 migrates cleanly.** All five migrations run in the test path as the
-   container owner, which is the same code path production uses.
+3. **Flyway 12 migrates cleanly.** All five migrations apply, both in the test path and
+   on the real one.
 
-The application starting is covered by the same run: the three `@SpringBootTest` classes
-boot the full context and serve over HTTP on a random port through Tomcat, and the tests
-drive it as a client would.
+### The application runs, on the real configuration
+
+The tests boot a context with the datasource overridden, which is not the same as the
+configuration the service ships with. So it was also started the documented way, against
+the local Postgres from `nine-platform` on port 15432, migrating as the owner and serving
+as `nine_app`:
+
+```
+Successfully applied 5 migrations to schema "public", now at version v5
+Tomcat started on port 18081 (http)
+Started BillingApplication in 1.217 seconds
+GET /actuator/health -> {"groups":["liveness","readiness"],"status":"UP"}
+```
+
+Then driven end to end the way the README documents:
+
+| Step | Result |
+|---|---|
+| `POST /admin/keys` with the bootstrap secret | `201`, key minted |
+| `POST /v1/usage`, 120 agent seconds | `201`, `chargedMinor: 240`, `replayed: false` |
+| the same `eventId` again | `200`, same `transactionId`, `replayed: true` |
+| `GET /v1/tenants/{id}/balance` | `240` minor, `2.40 GBP` |
+| `POST /v1/usage` with an unknown metric | `422`, `application/problem+json` |
+| any `/v1` call with no key | `401` |
+
+The 422 row is the direct proof for the constant that changed: `UNPROCESSABLE_CONTENT`
+puts the same `422` on the wire that `UNPROCESSABLE_ENTITY` did. Nothing a client sees
+moved.
 
 ## Still not covered
 
@@ -313,9 +340,9 @@ drive it as a client would.
   that requires Gradle 9.1.0 or later: Gradle 8.14, which this repo uses, supports Java 24
   as a toolchain at most. `.github/workflows/ci.yml` also pins `java-version: '17'` and
   has no toolchain auto-provisioning, so it needs the same change. None of that is BI1.2.
-- **The `DOCKER_API_VERSION` pin as a question rather than a value.** It works. Whether it
-  is still needed is unknown, and the honest way to find out is to delete it and run the
-  suite once.
-- **The 52 `rawtypes` and `unchecked` warnings.** Untouched, pre-existing, and unrelated to
+- **CI.** Everything here was proven on one laptop and one Docker daemon. The first push
+  is what proves it on `ubuntu-latest`, and the dropped `DOCKER_API_VERSION` pin is the
+  line most likely to behave differently there.
+- **The 52 `rawtypes` and `unchecked` warnings.** Untouched, pre-existing, unrelated to
   this upgrade. Worth a separate pass, since a build that runs `-Xlint:all` and then
   ignores 52 of its findings is not really running a lint gate.
