@@ -71,42 +71,47 @@ class IdempotencyTest extends PostgresTestBase {
     }
 
     @Test
-    @DisplayName("the constraint answers a replay itself, without the check in front of it")
-    void constraintPathReturnsTheOriginalRatherThanFailing() {
-        // Reach the constraint deliberately, with no concurrency involved. The
-        // reversal idempotency key is chosen by the caller, and metering builds
-        // its own as "usage:" + eventId. Spending that string on a reversal
-        // leaves a ledger transaction holding the key with no usage_charges row
-        // behind it, so the check in MeteringService misses and the insert goes
-        // to the constraint. That is the path the README says the guarantee
-        // rests on.
+    @DisplayName("a reversal cannot spend an idempotency key that metering will later need")
+    void reversalKeysDoNotCollideWithMeteringKeys() {
         ResponseEntity<Map<String, Object>> seed = usage("seed", 10);
         assertThat(seed.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         UUID seedTx = UUID.fromString((String) seed.getBody().get("transactionId"));
 
+        // The reversal key is chosen by the caller and metering builds its own as
+        // "usage:" + eventId. A caller sending that exact string is not doing
+        // anything wrong: the two operations simply must not share one namespace,
+        // because a key is unique per tenant and nothing else distinguishes them.
         ResponseEntity<Map<String, Object>> reversal = http.exchange(
             "/v1/ledger/" + seedTx + "/reverse", HttpMethod.POST,
             new HttpEntity<>(Map.of("tenantId", tenant,
-                "idempotencyKey", "usage:collide", "reason", "spend the key")), JSON);
+                "idempotencyKey", "usage:not-yet-charged", "reason", "take the name")), JSON);
         assertThat(reversal.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         Object reversalTx = reversal.getBody().get("reversalTransactionId");
 
-        ResponseEntity<Map<String, Object>> collided = usage("collide", 10);
+        // That event has never been charged, so this is a first charge and has to
+        // be priced and posted as one. Before the namespaces were separated it was
+        // answered with the reversal's transaction: a usage_charges row pointing at
+        // a transaction that reverses something, and no postings of its own.
+        ResponseEntity<Map<String, Object>> charge = usage("not-yet-charged", 10);
+        assertThat(charge.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(charge.getBody())
+            .containsEntry("replayed", false)
+            .containsEntry("chargedMinor", 20);
+        assertThat(charge.getBody().get("transactionId"))
+            .as("the charge is its own transaction, not the reversal that took the name")
+            .isNotEqualTo(reversalTx);
 
-        // The key is taken, so the insert conflicts. What matters here is that the
-        // conflict resolves to the transaction already holding the key instead of
-        // aborting the transaction the lookup would have to run in. Before this
-        // change the same call answered 500, first from 25P02 and then, once the
-        // conflict was suppressed but still raised across the transactional
-        // boundary, from UnexpectedRollbackException.
-        assertThat(collided.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(collided.getBody()).containsEntry("transactionId", reversalTx);
-
-        // Pinning what is still wrong rather than hiding it: the transaction the
-        // caller is handed is a reversal, because metering and reversal share one
-        // idempotency namespace. That is BI14.3, and this assertion is what will
-        // fail when it is fixed, which is the point.
-        assertThat(collided.getBody()).containsEntry("replayed", false);
+        // Namespacing must not cost the reversal its own replay. The same caller
+        // key still resolves to the same reversal, because the prefix is applied
+        // on every reversal rather than stored by some paths and not others.
+        ResponseEntity<Map<String, Object>> again = http.exchange(
+            "/v1/ledger/" + seedTx + "/reverse", HttpMethod.POST,
+            new HttpEntity<>(Map.of("tenantId", tenant,
+                "idempotencyKey", "usage:not-yet-charged", "reason", "take the name")), JSON);
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(again.getBody())
+            .as("a replayed reversal returns the reversal it already made")
+            .containsEntry("reversalTransactionId", reversalTx);
     }
 
     @Test
