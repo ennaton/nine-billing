@@ -58,12 +58,6 @@ tasks.withType<JavaCompile> {
 
 tasks.withType<Test> {
     useJUnitPlatform()
-    // Docker 29 refuses API versions older than it advertises. Tell docker-java
-    // which one to use instead of letting it guess an old default. This pin was
-    // added against Testcontainers 1.20.x. 2.0 reworked Docker environment
-    // detection, so it is carried over unchanged on purpose and has to be
-    // re-checked against a real run before it is trusted or dropped.
-    environment("DOCKER_API_VERSION", "1.44")
     testLogging {
         events("passed", "skipped", "failed")
     }
