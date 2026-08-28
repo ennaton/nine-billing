@@ -204,4 +204,20 @@ class TenantIsolationTest extends PostgresTestBase {
         assertThat(runs.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(runs.getBody()).doesNotContain(B.toString());
     }
+
+    @Test @Order(14)
+    @DisplayName("HTTP: a path parameter does not walk past the key filter")
+    void pathParameterDoesNotBypassTheFilter() {
+        // The raw request URI keeps ;x=1, and Spring strips it before matching a
+        // route. A filter that decides on the raw URI therefore reads a path that
+        // is not under /v1 and stands aside, while the request still reaches the
+        // /v1 handler.
+        ResponseEntity<String> noKey = raw.getForEntity("/v1;x=1/reconciliation/runs", String.class);
+        assertThat(noKey.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        // The same shape with a valid key still routes. The filter normalises the
+        // path, it does not refuse it.
+        ResponseEntity<String> withKey = as(keyA).getForEntity("/v1;x=1/reconciliation/runs", String.class);
+        assertThat(withKey.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
 }
