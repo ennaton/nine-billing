@@ -130,6 +130,10 @@ class TenantIsolationTest extends PostgresTestBase {
         TenantContext.bind(A);
         Long rows = jdbc.queryForObject("SELECT count(*) FROM accounts", Long.class);
         Long view = jdbc.queryForObject("SELECT count(*) FROM account_balances", Long.class);
+        // Agreement on its own is not the assertion: two zeroes agree. If RLS ever
+        // filtered tenant A down to nothing this would stay green, which is the
+        // shape D7 describes. Require rows before requiring agreement.
+        assertThat(rows).isPositive();
         assertThat(view).isEqualTo(rows);
     }
 
