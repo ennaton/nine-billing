@@ -210,6 +210,23 @@ class TenantIsolationTest extends PostgresTestBase {
     }
 
     @Test @Order(14)
+    @DisplayName("HTTP: actuator metrics is not published at all, health still is")
+    void metricsIsNotExposed() {
+        // http.server.requests counts by URI, so a reachable metrics endpoint
+        // reports how often /admin/keys was called and with what outcome, which
+        // is an oracle for guessing the bootstrap secret. Putting a key in front
+        // narrows that to anyone holding any tenant key, which is not closing it.
+        // Nothing consumes this endpoint yet, so it is not published. When BI7
+        // needs real metrics they leave over OTel rather than a scraped URL.
+        ResponseEntity<String> metrics = raw.getForEntity("/actuator/metrics", String.class);
+        assertThat(metrics.getStatusCode()).isNotEqualTo(HttpStatus.OK);
+
+        // Probes keep working, unauthenticated, which is the point of the open set.
+        ResponseEntity<String> health = raw.getForEntity("/actuator/health", String.class);
+        assertThat(health.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test @Order(15)
     @DisplayName("HTTP: a path parameter does not walk past the key filter")
     void pathParameterDoesNotBypassTheFilter() {
         // The raw request URI keeps ;x=1, and Spring strips it before matching a
