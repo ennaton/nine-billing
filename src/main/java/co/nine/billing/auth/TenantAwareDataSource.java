@@ -38,15 +38,37 @@ public class TenantAwareDataSource extends DelegatingDataSource {
         return bind(super.getConnection(username, password));
     }
 
+    /**
+     * Binds the tenant, and hands the connection back to the pool if it cannot.
+     *
+     * <p>The connection is already checked out by the time this runs, so an
+     * exception here is not just a failed request. A connection that is never
+     * closed is never returned, and the pool does not reclaim one it still
+     * believes is in use, so each failure removes one connection permanently.
+     * A database failover fails every checkout in the same way and empties the
+     * pool, and the service does not recover without a restart. Closing on the
+     * way out turns that into an ordinary error.
+     */
     private static Connection bind(Connection c) throws SQLException {
-        UUID tenant = TenantContext.current().orElse(null);
-        String role = OperatorContext.isActive() ? "operator" : "";
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT set_config('app.tenant_id', ?, false), set_config('app.role', ?, false)")) {
-            ps.setString(1, tenant == null ? "" : tenant.toString());
-            ps.setString(2, role);
-            ps.execute();
+        try {
+            UUID tenant = TenantContext.current().orElse(null);
+            String role = OperatorContext.isActive() ? "operator" : "";
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT set_config('app.tenant_id', ?, false), set_config('app.role', ?, false)")) {
+                ps.setString(1, tenant == null ? "" : tenant.toString());
+                ps.setString(2, role);
+                ps.execute();
+            }
+            return c;
+        } catch (SQLException | RuntimeException e) {
+            try {
+                c.close();
+            } catch (SQLException closeFailure) {
+                // The original failure is the one worth reporting. Keep the
+                // close failure attached rather than letting it replace it.
+                e.addSuppressed(closeFailure);
+            }
+            throw e;
         }
-        return c;
     }
 }
