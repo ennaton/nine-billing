@@ -1,6 +1,6 @@
 # nine-billing
 
-Usage metering and a double-entry ledger. Java 17, Spring Boot, PostgreSQL.
+Usage metering and a double-entry ledger. Java 25, Spring Boot, PostgreSQL.
 
 ## What this repo is for
 
