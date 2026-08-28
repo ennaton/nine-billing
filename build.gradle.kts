@@ -9,10 +9,11 @@ version = "0.1.0-SNAPSHOT"
 
 java {
     toolchain {
-        // 17 is what is installed locally. 21 is the newer LTS and the build
-        // moves there as soon as a 21 toolchain is available; nothing in the
-        // code depends on 17-only behaviour.
-        languageVersion = JavaLanguageVersion.of(17)
+        // 25, the current LTS, and the version audit-chain is compiled against:
+        // its class files are major 69, so a 17 toolchain cannot consume it and
+        // BI2 waits on this line. Gradle downloads the toolchain if the machine
+        // does not have one, so no local install is required.
+        languageVersion = JavaLanguageVersion.of(25)
     }
 }
 
