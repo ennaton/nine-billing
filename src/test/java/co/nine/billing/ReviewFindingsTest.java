@@ -8,9 +8,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.restclient.RestTemplateBuilder;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * nobody has understood yet.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureTestRestTemplate
 class ReviewFindingsTest extends PostgresTestBase {
 
     @Autowired TestRestTemplate raw;
@@ -48,7 +50,7 @@ class ReviewFindingsTest extends PostgresTestBase {
     }
 
     TestRestTemplate as(String key) {
-        return new TestRestTemplate(new RestTemplateBuilder().rootUri(raw.getRootUri()).defaultHeader("X-Api-Key", key));
+        return new TestRestTemplate(new RestTemplateBuilder().baseUri(raw.getRootUri()).defaultHeader("X-Api-Key", key));
     }
 
     // ---- T1 -------------------------------------------------------------

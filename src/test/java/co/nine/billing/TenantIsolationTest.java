@@ -8,9 +8,10 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.restclient.RestTemplateBuilder;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -33,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * has FORCE ROW LEVEL SECURITY, so a pass here is a pass under RLS for real.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureTestRestTemplate
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class TenantIsolationTest extends PostgresTestBase {
 
@@ -48,7 +50,7 @@ class TenantIsolationTest extends PostgresTestBase {
     void unbind() { TenantContext.clear(); }
 
     TestRestTemplate as(String key) {
-        return new TestRestTemplate(new RestTemplateBuilder().rootUri(raw.getRootUri()).defaultHeader("X-Api-Key", key));
+        return new TestRestTemplate(new RestTemplateBuilder().baseUri(raw.getRootUri()).defaultHeader("X-Api-Key", key));
     }
 
     String mint(UUID tenant) {

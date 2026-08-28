@@ -1,1 +1,1 @@
-rootProject.name = "wesan-billing"
+rootProject.name = "ennaton-billing"
