@@ -3,6 +3,8 @@ package co.nine.billing;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import co.nine.billing.auth.TenantContext;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.boot.resttestclient.TestRestTemplate;
@@ -14,6 +16,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
 import java.util.Map;
@@ -48,6 +51,7 @@ class IdempotencyTest extends PostgresTestBase {
         new ParameterizedTypeReference<>() {};
 
     @Autowired TestRestTemplate raw;
+    @Autowired JdbcTemplate jdbc;
 
     UUID tenant;
     TestRestTemplate http;
@@ -157,6 +161,36 @@ class IdempotencyTest extends PostgresTestBase {
             ResponseEntity<Map<String, Object>> balance = http.exchange(
                 "/v1/tenants/" + tenant + "/balance", HttpMethod.GET, null, JSON);
             assertThat(balance.getBody()).containsEntry("owedMinor", 20);
+
+            // BI3.2. One charge is the right count, and it is not the whole claim:
+            // fifty callers racing through the same write path must also leave the
+            // books balanced. A lost posting, a duplicated one, or a half written
+            // pair would still let the balance above read 20 on the account this
+            // test happens to look at.
+            TenantContext.bind(tenant);
+            try {
+                Long postings = jdbc.queryForObject("""
+                    SELECT count(*) FROM postings p
+                      JOIN ledger_transactions t ON t.id = p.transaction_id
+                     WHERE t.tenant_id = ?
+                    """, Long.class, tenant);
+                assertThat(postings)
+                    .as("there must be postings to sum, or the assertion below proves nothing")
+                    .isEqualTo(2);
+
+                Long imbalance = jdbc.queryForObject("""
+                    SELECT COALESCE(SUM(CASE WHEN p.direction = 'DEBIT'
+                                             THEN p.amount_minor ELSE -p.amount_minor END), 0)
+                      FROM postings p
+                      JOIN ledger_transactions t ON t.id = p.transaction_id
+                     WHERE t.tenant_id = ?
+                    """, Long.class, tenant);
+                assertThat(imbalance)
+                    .as("debits minus credits across everything this tenant wrote")
+                    .isZero();
+            } finally {
+                TenantContext.clear();
+            }
         } finally {
             pool.shutdownNow();
         }
