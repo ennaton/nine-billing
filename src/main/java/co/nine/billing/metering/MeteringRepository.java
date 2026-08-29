@@ -40,8 +40,24 @@ public class MeteringRepository {
             VALUES (gen_random_uuid(), ?, ?, ?, ?)
             ON CONFLICT (tenant_id, code) DO NOTHING
             """, tenantId, code, type.name(), currency);
-        return jdbc.queryForObject(
-            "SELECT id FROM accounts WHERE tenant_id = ? AND code = ?", UUID.class, tenantId, code);
+        return findAccount(tenantId, code).orElseThrow(() -> new IllegalStateException(
+            "no account after the upsert resolved: " + tenantId + " " + code));
+    }
+
+    /**
+     * The tenant's account with this code, if it has one. Reads, and only reads.
+     *
+     * <p>Separate from {@code ensureAccount} because a caller that only wants to
+     * know a balance must not be the one that decides the account exists. The
+     * account key is {@code (tenant, code)}, so creating one settles the tenant's
+     * currency, and {@code nine_app} holds no UPDATE or DELETE grant to change
+     * its mind afterwards.
+     */
+    public Optional<UUID> findAccount(UUID tenantId, String code) {
+        return jdbc.query(
+            "SELECT id FROM accounts WHERE tenant_id = ? AND code = ?",
+            rs -> rs.next() ? Optional.of(rs.getObject(1, UUID.class)) : Optional.empty(),
+            tenantId, code);
     }
 
     public Optional<UUID> chargeFor(UUID tenantId, String eventId) {
