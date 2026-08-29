@@ -3,6 +3,7 @@ package co.nine.billing.api;
 import co.nine.billing.auth.TenantMismatchException;
 import co.nine.billing.domain.DuplicateEntryException;
 import co.nine.billing.domain.UnbalancedEntryException;
+import co.nine.billing.infrastructure.ConstraintRules;
 import co.nine.billing.metering.UnknownMetricException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -39,8 +40,15 @@ public class ApiExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     ProblemDetail integrity(DataIntegrityViolationException e) {
         // The ledger said no: already reversed, currency mismatch, immutability.
-        String detail = e.getMostSpecificCause() != null ? e.getMostSpecificCause().getMessage() : e.getMessage();
-        return problem(HttpStatus.CONFLICT, "Ledger refused the operation", firstLine(detail));
+        // Which one is decided by the SQLState and constraint name the server
+        // reports, in ConstraintRules, and never by reading the message text.
+        // The message is formatting: it changes with the server version, it
+        // names an index the client has no business knowing, and keying on it
+        // makes a rename a breaking change.
+        String detail = ConstraintRules.of(e)
+            .map(ConstraintRules.Rule::detail)
+            .orElse("the write was refused by the ledger");
+        return problem(HttpStatus.CONFLICT, "Ledger refused the operation", detail);
     }
 
     @ExceptionHandler({EmptyResultDataAccessException.class, TenantMismatchException.class})

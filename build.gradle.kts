@@ -37,7 +37,11 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-flyway")
     implementation("org.flywaydb:flyway-database-postgresql")
 
-    runtimeOnly("org.postgresql:postgresql")
+    // Compile scope, not runtime. ConstraintRules reads the constraint name that
+    // the server reports as its own field on PSQLException, which is the only way
+    // to tell two 23505s apart without matching on message text. The dependency
+    // was already total at runtime; declaring it is honest rather than new.
+    implementation("org.postgresql:postgresql")
 
     // Boot 4.0 split test support per technology. This starter brings
     // spring-boot-starter-test and spring-boot-resttestclient with it, which
