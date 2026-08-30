@@ -39,26 +39,31 @@ public class MeteringRepository {
         jdbc.update("""
             INSERT INTO accounts (id, tenant_id, code, type, currency)
             VALUES (gen_random_uuid(), ?, ?, ?, ?)
-            ON CONFLICT (tenant_id, code) DO NOTHING
+            ON CONFLICT (tenant_id, code, currency) DO NOTHING
             """, tenantId, code, type.name(), currency);
-        return findAccount(tenantId, code).orElseThrow(() -> new IllegalStateException(
-            "no account after the upsert resolved: " + tenantId + " " + code));
+        return findAccount(tenantId, code, currency).orElseThrow(() -> new IllegalStateException(
+            "no account after the upsert resolved: " + tenantId + " " + code + " " + currency));
     }
 
     /**
-     * The tenant's account with this code, if it has one. Reads, and only reads.
+     * The tenant's account for this role in this currency, if it has one. Reads,
+     * and only reads.
      *
      * <p>Separate from {@code ensureAccount} because a caller that only wants to
-     * know a balance must not be the one that decides the account exists. The
-     * account key is {@code (tenant, code)}, so creating one settles the tenant's
-     * currency, and {@code nine_app} holds no UPDATE or DELETE grant to change
-     * its mind afterwards.
+     * know a balance must not be the one that decides the account exists.
+     *
+     * <p>The currency is part of the lookup, not a label applied to the answer.
+     * The key is {@code (tenant, code, currency)}, so a tenant can hold the same
+     * role in two books, and a query that matched on {@code (tenant, code)} would
+     * find both and this extractor would silently take whichever row came back
+     * first. There is no ORDER BY to make that deterministic and there should not
+     * be one: the caller knows which book it is asking about, so it says so.
      */
-    public Optional<UUID> findAccount(UUID tenantId, String code) {
+    public Optional<UUID> findAccount(UUID tenantId, String code, String currency) {
         return jdbc.query(
-            "SELECT id FROM accounts WHERE tenant_id = ? AND code = ?",
+            "SELECT id FROM accounts WHERE tenant_id = ? AND code = ? AND currency = ?",
             rs -> rs.next() ? Optional.of(rs.getObject(1, UUID.class)) : Optional.empty(),
-            tenantId, code);
+            tenantId, code, currency);
     }
 
     /** What an event was actually charged, as opposed to what it would cost now. */
