@@ -8,6 +8,7 @@ import co.nine.billing.metering.MeteringRepository;
 import co.nine.billing.metering.MeteringService;
 import co.nine.billing.metering.UsageEvent;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -37,7 +38,17 @@ public class BillingController {
             @NotBlank String eventId,
             @NotNull UUID tenantId,
             @NotBlank String metric,
-            @Min(1) long quantity,
+            // The ceiling is not a round number picked for comfort. The event
+            // contract caps duration_ms at 86,400,000, so the largest quantity any
+            // metric can legitimately carry is a 24 hour run expressed in seconds,
+            // 86,400. A million is an order of magnitude above that, which leaves
+            // room for a metric nobody has thought of yet, and ten orders of
+            // magnitude below the point where the price multiplication overflows.
+            //
+            // Without it, Math.multiplyExact in PricePlan throws ArithmeticException
+            // for a request that is simply out of range, and the caller is told 500.
+            // A 500 says retry; this will never succeed. It is a 400.
+            @Min(1) @Max(1_000_000) long quantity,
             Instant occurredAt) {}
 
     public record ChargeResponse(UUID transactionId, long chargedMinor, String currency, boolean replayed) {
