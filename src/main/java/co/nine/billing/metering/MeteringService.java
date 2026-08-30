@@ -92,7 +92,7 @@ public class MeteringService {
      * nothing, which is a fact this endpoint can report without writing it down.
      */
     public Money owed(UUID tenantId, String currency) {
-        return repo.findAccount(tenantId, RECEIVABLE)
+        return repo.findAccount(tenantId, RECEIVABLE, currency)
             .map(receivable -> Money.of(ledger.balanceMinor(receivable), currency))
             .orElseGet(() -> Money.of(0, currency));
     }
