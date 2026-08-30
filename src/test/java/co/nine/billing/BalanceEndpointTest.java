@@ -154,4 +154,28 @@ class BalanceEndpointTest extends PostgresTestBase {
             .containsEntry("owedMinor", 0);
         assertThat(usd.getBody()).containsEntry("currency", "USD");
     }
+
+    @Test
+    @DisplayName("a currency that does not exist is a bad request, and opens no account")
+    void anUnknownCurrencyIsRefused() {
+        // Charge first, so the tenant has a real balance. A wrong answer here
+        // would then be a wrong number rather than an empty one.
+        http.exchange("/v1/usage", HttpMethod.POST,
+            new HttpEntity<>(Map.of("eventId", "before-a-bad-read", "tenantId", tenant,
+                "metric", "agent_seconds", "quantity", 10)), JSON);
+        long before = accountsOf(tenant);
+
+        ResponseEntity<Map<String, Object>> res = balance("AAA");
+
+        assertThat(res.getStatusCode())
+            .as("ISO 4217 is a closed set, so a code outside it is a malformed request")
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.getHeaders().getContentType())
+            .as("errors on this API are problem+json")
+            .hasToString("application/problem+json");
+        assertThat(res.getBody()).containsEntry("title", "Unknown currency");
+        assertThat(accountsOf(tenant))
+            .as("a refused read is still a read")
+            .isEqualTo(before);
+    }
 }

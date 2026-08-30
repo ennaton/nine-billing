@@ -3,6 +3,7 @@ package co.nine.billing.api;
 import co.nine.billing.auth.TenantMismatchException;
 import co.nine.billing.domain.DuplicateEntryException;
 import co.nine.billing.domain.UnbalancedEntryException;
+import co.nine.billing.domain.UnknownCurrencyException;
 import co.nine.billing.infrastructure.ConstraintRules;
 import co.nine.billing.metering.UnknownMetricException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -25,6 +26,14 @@ public class ApiExceptionHandler {
     @ExceptionHandler(UnknownMetricException.class)
     ProblemDetail unknownMetric(UnknownMetricException e) {
         return problem(HttpStatus.UNPROCESSABLE_CONTENT, "Unknown metric", e.getMessage());
+    }
+
+    // Ahead of the IllegalArgumentException handler below, which this extends.
+    // Spring resolves to the most specific handler, so naming the subtype here
+    // is what separates a currency that does not exist from a domain guard.
+    @ExceptionHandler(UnknownCurrencyException.class)
+    ProblemDetail unknownCurrency(UnknownCurrencyException e) {
+        return problem(HttpStatus.BAD_REQUEST, "Unknown currency", e.getMessage());
     }
 
     @ExceptionHandler({UnbalancedEntryException.class, IllegalArgumentException.class})
