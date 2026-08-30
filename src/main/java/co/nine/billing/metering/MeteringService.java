@@ -80,10 +80,21 @@ public class MeteringService {
         return new Charge(txId, amount, false);
     }
 
-    /** How much the tenant currently owes: the receivable balance. */
+    /**
+     * How much the tenant currently owes: the receivable balance.
+     *
+     * <p>A read, and only a read. This used to call {@code ensureAccount}, so
+     * asking for a balance created the account, from a GET, outside any
+     * transaction. Since the account key is {@code (tenant, code)}, the currency
+     * named by whichever read happened first became the tenant's currency for
+     * good, every later posting failed against the composite foreign key, and no
+     * grant existed that could undo it. A tenant that has never been charged owes
+     * nothing, which is a fact this endpoint can report without writing it down.
+     */
     public Money owed(UUID tenantId, String currency) {
-        UUID receivable = repo.ensureAccount(tenantId, RECEIVABLE, AccountType.ASSET, currency);
-        return Money.of(ledger.balanceMinor(receivable), currency);
+        return repo.findAccount(tenantId, RECEIVABLE)
+            .map(receivable -> Money.of(ledger.balanceMinor(receivable), currency))
+            .orElseGet(() -> Money.of(0, currency));
     }
 
     public List<MeteringRepository.LedgerLine> recent(UUID tenantId, int limit) {
