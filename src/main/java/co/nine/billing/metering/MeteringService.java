@@ -36,16 +36,20 @@ public class MeteringService {
 
     @Transactional
     public Charge charge(UsageEvent event) {
+        // The replay check comes first, and deliberately before the price is
+        // looked up. An event that has already been charged is answered from
+        // what was recorded, so the answer cannot be moved by a later edit to
+        // the catalogue and cannot be refused because the metric was since
+        // withdrawn. Pricing is for charges that have not happened yet.
+        Optional<MeteringRepository.RecordedCharge> already =
+            repo.chargeFor(event.tenantId(), event.eventId());
+        if (already.isPresent()) {
+            return new Charge(already.get().transactionId(), already.get().amount(), true);
+        }
+
         PricePlan plan = repo.pricePlan(event.metric())
             .orElseThrow(() -> new UnknownMetricException(event.metric()));
         Money amount = plan.priceFor(event.quantity());
-
-        // Fast path for replays: the ledger would also refuse the duplicate
-        // key, but checking here avoids creating postings we then discard.
-        Optional<UUID> existing = repo.chargeFor(event.tenantId(), event.eventId());
-        if (existing.isPresent()) {
-            return new Charge(existing.get(), amount, true);
-        }
 
         UUID receivable = repo.ensureAccount(event.tenantId(), RECEIVABLE, AccountType.ASSET, plan.currency());
         UUID revenue    = repo.ensureAccount(event.tenantId(), REVENUE,    AccountType.REVENUE, plan.currency());
@@ -59,10 +63,21 @@ public class MeteringService {
             Optional.empty());
 
         UUID txId = ledger.post(entry);
+
         // The check above can lose a race, so whether this is a first charge is
         // decided by the write, not by the read that came before it.
-        boolean recorded = repo.recordCharge(event, amount.minor(), plan.currency(), txId);
-        return new Charge(txId, amount, !recorded);
+        if (!repo.recordCharge(event, amount.minor(), plan.currency(), txId)) {
+            // A concurrent caller wrote the charge first. Same rule as above:
+            // the recorded amount is the answer, not the one computed here,
+            // which is only equal to it while both callers agree on the
+            // quantity.
+            MeteringRepository.RecordedCharge winner =
+                repo.chargeFor(event.tenantId(), event.eventId()).orElseThrow(
+                    () -> new IllegalStateException(
+                        "the insert conflicted but no charge is on record for " + event.eventId()));
+            return new Charge(winner.transactionId(), winner.amount(), true);
+        }
+        return new Charge(txId, amount, false);
     }
 
     /** How much the tenant currently owes: the receivable balance. */

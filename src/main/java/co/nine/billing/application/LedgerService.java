@@ -13,6 +13,21 @@ import org.springframework.stereotype.Service;
 @Service
 public class LedgerService {
 
+    /**
+     * Namespace for reversal idempotency keys.
+     *
+     * <p>A key is unique per {@code (tenant, key)} and nothing in the schema says
+     * which operation wrote it, so every operation that writes one has to say so
+     * itself. Metering names its keys {@code "usage:" + eventId}; a reversal key
+     * is chosen by the caller, so this service names it rather than trusting the
+     * caller to. Without it a caller could spend, by accident or otherwise, the
+     * exact string metering will construct for an event that has not happened
+     * yet, and that event's first charge would then be answered with the
+     * reversal's transaction: a charge row pointing at something that reverses,
+     * with no postings of its own.
+     */
+    static final String REVERSAL_KEY_PREFIX = "reversal:";
+
     private final LedgerRepository repo;
 
     public LedgerService(LedgerRepository repo) {
@@ -55,7 +70,8 @@ public class LedgerService {
                 p.amount()))
             .toList();
         return post(new LedgerEntry(
-            tenantId, idempotencyKey, reason, Instant.now(), mirrored, Optional.of(originalTxId)));
+            tenantId, REVERSAL_KEY_PREFIX + idempotencyKey, reason, Instant.now(),
+            mirrored, Optional.of(originalTxId)));
     }
 
     public long balanceMinor(UUID accountId) {
