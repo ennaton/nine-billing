@@ -32,6 +32,37 @@ Tests run against a real Postgres through Testcontainers, as `nine_app`, so a pa
 
 `./gradlew test` must be green before a push. CI runs the same suite.
 
+## How a change is finished here
+
+Three rules about finishing rather than about correctness, added after a run of
+defects that had one shape in common: every statement behind them was
+individually true, and none was carried to its consequence.
+
+**A change is finished when what it unblocks has been said out loud.** The
+acceptance criterion is where the work stops, not where the thinking stops.
+`findAccount` selected on `(tenant, code)` and took the first row with no
+`ORDER BY`, which was correct until BI13.3 widened that exact key, and the same
+person wrote both. So before closing anything, answer in writing: what is now
+true that was not, and who is waiting on it. If nothing is unblocked, say that,
+because silence reads the same as not having looked. The commit body names the
+task it closes, `BI13.1.` on its own line, so that answer outlives the session
+that produced it and "what is done" can be asked of the repository rather than
+of a person.
+
+**The edit is not the boundary of what you read.** Read the whole method you are
+touching, not the line you came for. Two defects found in one review sat within
+five lines of a change that was itself correct: the balance response took its
+number from the computed `Money` and its label from the request string, and the
+two agreed only because nothing had yet made them disagree.
+
+**A comment that explains why something works names the mechanism it was checked
+against.** Prose asserting a mechanism is a claim and carries the same burden as
+a number. "This handler wins because it is declared first" was wrong:
+`ExceptionHandlerMethodResolver` ranks candidates with `ExceptionDepthComparator`
+and position in the file means nothing. Checking it produced the stronger
+sentence, that nobody can break the distinction by reordering the methods. If the
+mechanism was not checked, the sentence does not get written.
+
 ## Rules every Nine repo shares
 
 **Language.** Code, comments, commit messages, docs, artifacts and UI strings are English. No exceptions, including in files nobody reads yet, and including an artifact whose subject was discussed in another language: it is written in English at the moment it is written, not translated afterwards. `githooks/pre-commit` blocks the added lines and the `house-style` CI job scans the whole tree, so a file that predates the rule fails the build until it is rewritten.
