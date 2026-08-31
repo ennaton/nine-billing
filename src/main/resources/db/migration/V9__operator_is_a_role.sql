@@ -41,7 +41,21 @@ GRANT SELECT ON ledger_transactions, postings, usage_charges,
                 reconciliation_runs, reconciliation_findings TO nine_operator;
 GRANT INSERT ON reconciliation_runs, reconciliation_findings TO nine_operator;
 GRANT SELECT, INSERT ON api_keys TO nine_operator;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO nine_operator;
+
+-- No sequence grant, and that is the measured answer rather than an omission.
+-- V4 hands nine_app `USAGE, SELECT ON ALL SEQUENCES`, and the first draft here
+-- copied it, which @MustafaKemalV caught as wider than this file's own stated
+-- principle: the schema holds two sequences and one of them belongs to
+-- `postings`, where nine_operator may only read. Removing the line entirely
+-- leaves the suite at 60 green, including the reconciliation run that inserts
+-- into `reconciliation_runs` as the operator.
+--
+-- The reason is the column definition. Both ids are
+-- `BIGINT GENERATED ALWAYS AS IDENTITY`, not `serial`. An identity sequence is
+-- owned by its column and Postgres checks INSERT on the table rather than USAGE
+-- on the sequence, so the grant never did anything. The same line in V4 is
+-- equally inert for nine_app; removing it is a separate migration and belongs
+-- with BI16.3, not here.
 
 -- The whole change, in one function body. Every policy in V4 and V5 that says
 -- "OR is_operator()" now asks who is connected instead of what the connection
