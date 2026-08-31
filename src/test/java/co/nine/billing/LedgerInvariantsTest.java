@@ -188,6 +188,52 @@ class LedgerInvariantsTest extends PostgresTestBase {
             .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test @DisplayName("5b. the database refuses zero and negative too, even when Java is bypassed")
+    void nonPositiveAmountsRefusedByTheDatabase() {
+        // Test 5 above proves the Java half: Posting.debit throws before any SQL
+        // is issued, which is exactly why it cannot prove the other half. Nothing
+        // in this suite ever sent a non positive amount to Postgres, so removing
+        // CHECK (amount_minor > 0) would have left this file green. The only test
+        // that reached the constraint was about mapping SQLStates to rules and it
+        // only ever sent zero.
+        UUID tx = UUID.randomUUID();
+        jdbc.update("INSERT INTO ledger_transactions (id, tenant_id, idempotency_key, description, occurred_at)"
+            + " VALUES (?, ?, ?, ?, now())", tx, tenant, "raw-nonpositive", "bypass");
+
+        // The rule is asserted by name, not by the fact that something was
+        // refused. postings_amount_minor_check and the balance trigger both
+        // raise 23514, so a test that only checked for a refusal could not tell
+        // which one answered, and would still pass if the CHECK were gone and
+        // the imbalance caught it instead.
+        assertThat(ruleFor(() -> rawPosting(jdbc, tx, 0)))
+            .as("zero, refused by the constraint rather than by the balance trigger")
+            .contains(ConstraintRules.Rule.AMOUNT_NOT_POSITIVE);
+        assertThat(ruleFor(() -> rawPosting(jdbc, tx, -100)))
+            .as("negative, which no test had ever sent to the database")
+            .contains(ConstraintRules.Rule.AMOUNT_NOT_POSITIVE);
+
+        // Twice over, like immutability. A CHECK constraint binds the owner as
+        // well, so the principal that can reach past row level security cannot
+        // reach past this.
+        assertThat(ruleFor(() -> rawPosting(superuser(), tx, -1)))
+            .as("the owner is refused by the same constraint")
+            .contains(ConstraintRules.Rule.AMOUNT_NOT_POSITIVE);
+    }
+
+    private void rawPosting(JdbcTemplate on, UUID tx, long minor) {
+        on.update("INSERT INTO postings (transaction_id, account_id, direction, amount_minor, currency)"
+            + " VALUES (?, ?, 'DEBIT', ?, 'GBP')", tx, cash, minor);
+    }
+
+    private Optional<ConstraintRules.Rule> ruleFor(Runnable write) {
+        try {
+            write.run();
+            throw new AssertionError("the database was expected to refuse this write");
+        } catch (RuntimeException refused) {
+            return ConstraintRules.of(refused);
+        }
+    }
+
     // ---- 6 and 7. immutability -----------------------------------------------------
 
     @Test @DisplayName("6. UPDATE on a posting is rejected by the database, twice over")
