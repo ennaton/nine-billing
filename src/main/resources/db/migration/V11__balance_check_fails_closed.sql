@@ -38,12 +38,13 @@
 CREATE OR REPLACE FUNCTION assert_transaction_balances() RETURNS TRIGGER AS $$
 DECLARE
     txid UUID := COALESCE(NEW.transaction_id, OLD.transaction_id);
-    visible BIGINT;
     offending RECORD;
 BEGIN
-    SELECT count(*) INTO visible FROM postings p WHERE p.transaction_id = txid;
-
-    IF visible = 0 THEN
+    -- EXISTS rather than count(*). This trigger is FOR EACH ROW, so it runs once
+    -- per posting, and the question is only whether the function is blind. EXISTS
+    -- stops at the first row; counting would walk them all for an answer nobody
+    -- reads.
+    IF NOT EXISTS (SELECT 1 FROM postings p WHERE p.transaction_id = txid) THEN
         RAISE EXCEPTION
             'balance check cannot see transaction %, refusing rather than passing', txid
             USING ERRCODE = 'internal_error';

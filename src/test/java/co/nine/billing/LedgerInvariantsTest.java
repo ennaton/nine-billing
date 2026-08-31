@@ -145,7 +145,13 @@ class LedgerInvariantsTest extends PostgresTestBase {
             }
             c.commit();
             return null;
-        })).hasMessageContaining("cannot see transaction");
+        }))
+            // Measured, and pinned because it is a contract: XX000 is not an
+            // integrity violation, so ApiExceptionHandler's 409 branch does not
+            // claim it and the caller is not told it broke a rule. A blind check
+            // is this service's defect and answers like one.
+            .isInstanceOf(org.springframework.jdbc.UncategorizedSQLException.class)
+            .hasMessageContaining("cannot see transaction");
 
         // Read back outside RLS: the writer cannot report on rows it cannot see.
         assertThat(superuser().queryForObject(
