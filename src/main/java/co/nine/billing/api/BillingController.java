@@ -81,7 +81,12 @@ public class BillingController {
                                    @RequestParam(defaultValue = "GBP") String currency) {
         Tenancy.requireOwn(tenantId);
         Money owed = metering.owed(tenantId, Currencies.require(currency));
-        return new BalanceResponse(tenantId, owed.minor(), currency, display(owed));
+        // Both halves of the answer come from the money that was counted. The
+        // label used to be the request string, which agreed with the number only
+        // because owed() builds its Money from the same argument. A fallback that
+        // answered in another book would have changed the number and left the
+        // label, which is the mislabelling BI13.4 exists to close.
+        return new BalanceResponse(tenantId, owed.minor(), owed.currency().getCurrencyCode(), display(owed));
     }
 
     /** Recent ledger lines for a tenant, newest first. */
