@@ -156,6 +156,63 @@ class BalanceEndpointTest extends PostgresTestBase {
     }
 
     @Test
+    @DisplayName("a currency that does not exist is a bad request, and opens no account")
+    void anUnknownCurrencyIsRefused() {
+        // Charge first, so the tenant has a real balance. A wrong answer here
+        // would then be a wrong number rather than an empty one.
+        http.exchange("/v1/usage", HttpMethod.POST,
+            new HttpEntity<>(Map.of("eventId", "before-a-bad-read", "tenantId", tenant,
+                "metric", "agent_seconds", "quantity", 10)), JSON);
+        long before = accountsOf(tenant);
+
+        ResponseEntity<Map<String, Object>> res = balance("AAA");
+
+        assertThat(res.getStatusCode())
+            .as("ISO 4217 is a closed set, so a code outside it is a malformed request")
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.getHeaders().getContentType())
+            .as("errors on this API are problem+json")
+            .hasToString("application/problem+json");
+        assertThat(res.getBody()).containsEntry("title", "Unknown currency");
+        assertThat(accountsOf(tenant))
+            .as("a refused read is still a read")
+            .isEqualTo(before);
+    }
+
+    @Test
+    @DisplayName("a GBP balance is not relabelled JPY by asking for JPY")
+    void aBalanceIsNeverRelabelled() {
+        // Every price plan is GBP, so this is a GBP balance of 20 minor units.
+        http.exchange("/v1/usage", HttpMethod.POST,
+            new HttpEntity<>(Map.of("eventId", "gbp-only", "tenantId", tenant,
+                "metric", "agent_seconds", "quantity", 10)), JSON);
+        long before = accountsOf(tenant);
+
+        // JPY rather than USD on purpose. JPY reports zero fraction digits, so
+        // display() takes the branch that skips the divide. A relabelled balance
+        // would come back as "20 JPY", which reads as twenty yen for twenty
+        // pence: the same figure inflated a hundredfold, not merely mislabelled.
+        ResponseEntity<Map<String, Object>> jpy = balance("JPY");
+
+        assertThat(jpy.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jpy.getBody())
+            .as("nothing was charged in JPY, so the answer is zero and not the GBP figure")
+            .containsEntry("owedMinor", 0);
+        assertThat(jpy.getBody()).containsEntry("currency", "JPY");
+        assertThat(jpy.getBody())
+            .as("zero yen, printed without a decimal point that yen do not have")
+            .containsEntry("display", "0 JPY");
+
+        // The GBP book is untouched by having been asked about in another currency.
+        assertThat(balance("GBP").getBody())
+            .containsEntry("owedMinor", 20)
+            .containsEntry("display", "0.20 GBP");
+        assertThat(accountsOf(tenant))
+            .as("asking in a currency the tenant does not hold opens no book")
+            .isEqualTo(before);
+    }
+
+    @Test
     @DisplayName("a quantity that would overflow the price is refused, not a 500")
     void anAbsurdQuantityIsRefused() {
         // seats is priced at 900 minor units, so Long.MAX_VALUE here reaches

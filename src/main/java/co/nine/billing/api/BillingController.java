@@ -2,6 +2,7 @@ package co.nine.billing.api;
 
 import co.nine.billing.application.LedgerService;
 import co.nine.billing.auth.Tenancy;
+import co.nine.billing.domain.Currencies;
 import co.nine.billing.domain.Money;
 import co.nine.billing.metering.Charge;
 import co.nine.billing.metering.MeteringRepository;
@@ -79,7 +80,7 @@ public class BillingController {
     public BalanceResponse balance(@PathVariable UUID tenantId,
                                    @RequestParam(defaultValue = "GBP") String currency) {
         Tenancy.requireOwn(tenantId);
-        Money owed = metering.owed(tenantId, currency);
+        Money owed = metering.owed(tenantId, Currencies.require(currency));
         return new BalanceResponse(tenantId, owed.minor(), currency, display(owed));
     }
 
