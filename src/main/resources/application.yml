@@ -20,6 +20,13 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/nine_billing}
     user: ${NINE_MIGRATION_USERNAME:postgres}
     password: ${NINE_MIGRATION_PASSWORD:postgres}
+    placeholders:
+      # V9 creates nine_operator with this. It is a placeholder rather than a
+      # literal in the migration so that the deployment supplies the real one
+      # and the file in git holds a development default only. V4 hardcodes
+      # nine_app's password and that is BI16.3, still open; this is the
+      # mechanism that closes it without inventing anything.
+      operatorPassword: ${NINE_OPERATOR_PASSWORD:nine_operator_dev}
 
 nine:
   billing:
@@ -27,6 +34,13 @@ nine:
       interval: ${NINE_RECONCILE_INTERVAL:PT15M}
     # Required to mint API keys via POST /admin/keys. Empty disables minting.
     bootstrap-secret: ${NINE_BOOTSTRAP_SECRET:}
+    # The second database role. Reconciliation and the first key for a new
+    # tenant run as this; nothing an HTTP caller controls reaches it. It is
+    # narrower than nine_app, not wider: it may read across every tenant, and
+    # it holds no grant at all on accounts, price_plans or account_balances.
+    operator:
+      username: ${NINE_OPERATOR_USERNAME:nine_operator}
+      password: ${NINE_OPERATOR_PASSWORD:nine_operator_dev}
 
 management:
   endpoints:
