@@ -28,12 +28,19 @@ the ones `V4` grants it:
 holds no grant that could produce this. It simply wrote to the variable that was
 supposed to bound it.
 
-**The counts above are not reproducible and the mechanism is.** They were taken
-against the query plan baseline data, roughly four thousand charges across ten
-tenants, and that database has since been reset: a rerun today reads
-`accounts=4 postings=4 findings=0 runs=2` and the third row comes back as zero
-along with the first two. What reproduces on any data is the predicate, and it
-is the predicate the decision rests on:
+**The counts are per instance, and the mechanism is not.** This was first written
+as "the counts are stale, the database was reset", which was wrong, and the
+correction is worth more than the sentence it replaces. The numbers were taken
+against the query plan baseline data in `nine-platform`'s compose Postgres on
+port 15432, and re-measured there today they are unchanged: `accounts=33`,
+`postings=8018`, and `reconciliation_findings` now at six rather than two,
+because reconciliation has run again since. Measured on a fresh instance the
+same three reads return small numbers or zero, which is what a second reading
+against a different database showed and what led to calling them stale.
+
+So the counts are neither stale nor reproducible. They describe one database,
+and any reader who reruns them lands on their own. What holds anywhere is the
+predicate, and the predicate is what the decision rests on:
 
 ```
 nine_app  is_operator=true
@@ -41,8 +48,8 @@ nine_app  is_operator=true
 
 after one `set_config` the service role is allowed to make, with
 `findings_operator_only`'s qual being `is_operator()` and nothing else. Anyone
-rewriting this as an ADR restates the table against the database in front of
-them, because an ADR gets cited and a reader who reruns it will land on zeroes.
+rewriting this as an ADR states which instance a number came from, or drops the
+number and keeps the predicate.
 
 The second row is worth its own sentence: binding the tenant that owns those
 findings still returns zero, because `findings_operator_only` is
@@ -161,13 +168,16 @@ Every table in `nine_billing` is owned by `postgres`, which is a superuser. Seve
 of the nine carry `FORCE ROW LEVEL SECURITY`, and `V5`'s comment explains it as
 "so the table owner is not exempt either".
 
-Measured as the owner, with no tenant bound:
+Measured as the owner, with no tenant bound, on the same instance as above and
+carrying the same caveat, re-measured today:
 
 ```
-accounts=33  postings=8018  findings=2
+accounts=33  postings=8018  findings=6
 ```
 
-The same query as `nine_app` returns `0 0 0`.
+The same query as `nine_app` returns `0 0 0`, and that half is the part that does
+not depend on the instance: whatever the owner can see, the runtime role sees
+none of it, and the gap between the two lines is the whole finding.
 
 `FORCE` removes the owner's exemption. It does not remove the superuser's, and
 here they are the same role, so `FORCE` currently buys nothing on any of the
