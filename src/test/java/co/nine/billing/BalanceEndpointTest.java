@@ -154,4 +154,35 @@ class BalanceEndpointTest extends PostgresTestBase {
             .containsEntry("owedMinor", 0);
         assertThat(usd.getBody()).containsEntry("currency", "USD");
     }
+
+    @Test
+    @DisplayName("a quantity that would overflow the price is refused, not a 500")
+    void anAbsurdQuantityIsRefused() {
+        // seats is priced at 900 minor units, so Long.MAX_VALUE here reaches
+        // Math.multiplyExact in PricePlan and throws ArithmeticException, which
+        // no handler maps. The caller sees 500 for a request that is simply out
+        // of range, and a 500 tells a client to retry something that will never
+        // succeed.
+        ResponseEntity<Map<String, Object>> res = http.exchange("/v1/usage", HttpMethod.POST,
+            new HttpEntity<>(Map.of("eventId", "absurd", "tenantId", tenant,
+                "metric", "seats", "quantity", Long.MAX_VALUE)), JSON);
+
+        assertThat(res.getStatusCode())
+            .as("out of range is the caller's problem, not the server's")
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    @DisplayName("a quantity inside the ceiling is still charged")
+    void aLargeButLegitimateQuantityStillWorks() {
+        // The event contract caps duration_ms at 86,400,000, so the largest
+        // quantity any metric can legitimately carry is a 24 hour run in
+        // seconds. This is comfortably inside that and must not be refused.
+        ResponseEntity<Map<String, Object>> res = http.exchange("/v1/usage", HttpMethod.POST,
+            new HttpEntity<>(Map.of("eventId", "big-but-real", "tenantId", tenant,
+                "metric", "agent_seconds", "quantity", 86_400)), JSON);
+
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(res.getBody()).containsEntry("chargedMinor", 172_800);
+    }
 }
