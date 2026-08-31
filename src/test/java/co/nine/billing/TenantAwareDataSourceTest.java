@@ -46,7 +46,7 @@ class TenantAwareDataSourceTest {
         DataSource target = mock(DataSource.class);
         when(target.getConnection()).thenReturn(connection);
 
-        TenantAwareDataSource wrapper = new TenantAwareDataSource(target);
+        TenantAwareDataSource wrapper = new TenantAwareDataSource(target, TenantAwareDataSourceTest::noOperatorPoolHere);
 
         assertThatThrownBy(wrapper::getConnection).isInstanceOf(SQLException.class);
         verify(connection, times(1)).close();
@@ -64,7 +64,7 @@ class TenantAwareDataSourceTest {
         DataSource target = mock(DataSource.class);
         when(target.getConnection()).thenReturn(connection);
 
-        TenantAwareDataSource wrapper = new TenantAwareDataSource(target);
+        TenantAwareDataSource wrapper = new TenantAwareDataSource(target, TenantAwareDataSourceTest::noOperatorPoolHere);
 
         assertThatThrownBy(wrapper::getConnection).isInstanceOf(SQLException.class);
         verify(connection, times(1)).close();
@@ -81,9 +81,18 @@ class TenantAwareDataSourceTest {
         DataSource target = mock(DataSource.class);
         when(target.getConnection()).thenReturn(connection);
 
-        TenantAwareDataSource wrapper = new TenantAwareDataSource(target);
+        TenantAwareDataSource wrapper = new TenantAwareDataSource(target, TenantAwareDataSourceTest::noOperatorPoolHere);
 
         assertThat(wrapper.getConnection()).isSameAs(connection);
         verify(connection, never()).close();
+    }
+    /**
+     * These three cases are about the tenant path, so the operator pool must
+     * never be reached. A supplier that throws says so out loud: if routing
+     * ever sends an ordinary checkout down the operator branch, the test fails
+     * here rather than passing for the wrong reason.
+     */
+    private static javax.sql.DataSource noOperatorPoolHere() {
+        throw new AssertionError("the tenant path must not reach the operator pool");
     }
 }
