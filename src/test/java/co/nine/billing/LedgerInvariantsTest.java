@@ -118,6 +118,39 @@ class LedgerInvariantsTest extends PostgresTestBase {
 
     // ---- 3. idempotency ------------------------------------------------------------
 
+    @Test @DisplayName("2d. the balance check refuses rather than passes when it cannot see the postings")
+    void balanceCheckCannotPassOnWhatItCannotSee() {
+        // assert_transaction_balances is SECURITY INVOKER, so its own SELECT over
+        // postings runs under the caller's row-level security. Clearing the tenant
+        // before COMMIT used to hide every row from it: the aggregate ran over an
+        // empty set, nothing was raised, and a transaction of 1000 against 999
+        // committed with the imbalance on disk. Fail closed on the read had become
+        // fail open on the invariant.
+        //
+        // Nothing in the service clears the GUC midway today, because it is written
+        // at connection checkout and the same connection is held through COMMIT.
+        // This test exists so that stays a fact rather than a coincidence.
+        UUID tx = UUID.randomUUID();
+        assertThatThrownBy(() -> jdbc.execute((java.sql.Connection c) -> {
+            c.setAutoCommit(false);
+            try (var st = c.createStatement()) {
+                st.execute("INSERT INTO ledger_transactions (id, tenant_id, idempotency_key, description, occurred_at) VALUES ('"
+                    + tx + "','" + tenant + "','raw-blind','bypass', now())");
+                st.execute("INSERT INTO postings (transaction_id, account_id, direction, amount_minor, currency) VALUES ('"
+                    + tx + "','" + cash + "','DEBIT',1000,'GBP'),('" + tx + "','" + revenue + "','CREDIT',999,'GBP')");
+                st.execute("SELECT set_config('app.tenant_id', '', false)");
+            }
+            c.commit();
+            return null;
+        })).hasMessageContaining("cannot see transaction");
+
+        // Read back outside RLS: the writer cannot report on rows it cannot see.
+        assertThat(superuser().queryForObject(
+            "SELECT count(*) FROM postings WHERE transaction_id = ?", Long.class, tx))
+            .as("nothing from a refused transaction may be on disk")
+            .isZero();
+    }
+
     @Test @DisplayName("3. replaying an idempotency key returns the same transaction and posts nothing new")
     void idempotencyKeyReplayIsNoOp() {
         UUID first = ledger.post(entry("charge-2", debit(cash, 500), credit(revenue, 500)));
