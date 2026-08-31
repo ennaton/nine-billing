@@ -28,6 +28,22 @@ the ones `V4` grants it:
 holds no grant that could produce this. It simply wrote to the variable that was
 supposed to bound it.
 
+**The counts above are not reproducible and the mechanism is.** They were taken
+against the query plan baseline data, roughly four thousand charges across ten
+tenants, and that database has since been reset: a rerun today reads
+`accounts=4 postings=4 findings=0 runs=2` and the third row comes back as zero
+along with the first two. What reproduces on any data is the predicate, and it
+is the predicate the decision rests on:
+
+```
+nine_app  is_operator=true
+```
+
+after one `set_config` the service role is allowed to make, with
+`findings_operator_only`'s qual being `is_operator()` and nothing else. Anyone
+rewriting this as an ADR restates the table against the database in front of
+them, because an ADR gets cited and a reader who reruns it will land on zeroes.
+
 The second row is worth its own sentence: binding the tenant that owns those
 findings still returns zero, because `findings_operator_only` is
 `FOR ALL USING (is_operator())` with no tenant clause at all. The only way to
@@ -114,8 +130,20 @@ reports a problem.
 
 - **A second connection pool.** `TenantAwareDataSource` routes on
   `OperatorContext`; the operator branch needs its own `DataSource` under
-  `nine_operator`. Both current callers, the reconciliation job and the key
-  bootstrap endpoint, route through it.
+  `nine_operator`. There are three callers, not two: the scheduled
+  reconciliation job at `ReconciliationService:73`, `POST /admin/keys` at
+  `KeyBootstrapController:46`, and `GET /admin/reconciliation/runs/{runId}/findings`
+  at `ReconciliationOperatorController:51`. All three route through it, and two
+  of them are HTTP.
+- **The boundary moves, it does not disappear.** Today it is a GUC any statement
+  can set. Under A it becomes the routing decision in `TenantAwareDataSource`
+  plus every caller of `OperatorContext.run`. That is narrower, because the
+  database checks `current_user` and no stray `set_config` can lie about it, but
+  the routing code is the new boundary and deserves the scrutiny the GUC never
+  got. It also sharpens a question that was proportionate while operator was
+  nominal: `/admin` sits in `ApiKeyFilter`'s open list and its endpoints are
+  guarded by a secret compared in the application. That is a different
+  proposition once the context selects a privileged pool.
 - **A second credential.** `V4` already hardcodes `nine_app`'s password, which is
   BI16.3 and open. A second role must not double that debt, so the role is created
   without a password in the migration and the credential is supplied by the
@@ -147,6 +175,10 @@ seven tables. The intent is written in `CLAUDE.md`, which says the service runs
 as a role that is neither superuser nor table owner, but nothing in any migration
 creates a non-superuser owner, so no environment the repo can build actually has
 one.
+
+It invalidates no test. The suite connects as `nine_app`, which is neither owner
+nor superuser, so the fail closed assertions were never leaning on `FORCE` in the
+first place. `FORCE` currently buys nothing; the tests did not measure nothing.
 
 This is not BI12.4 and it is not fixed here. It is written down because it was
 measured today and because it changes what `FORCE` is worth everywhere in the
