@@ -8,12 +8,15 @@ import co.nine.billing.domain.LedgerEntry;
 import co.nine.billing.domain.Money;
 import co.nine.billing.domain.Posting;
 import co.nine.billing.domain.UnbalancedEntryException;
+import co.nine.billing.infrastructure.ConstraintRules;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import co.nine.billing.auth.TenantContext;
@@ -232,16 +235,98 @@ class LedgerInvariantsTest extends PostgresTestBase {
             .hasMessageContaining("ledger_tx_reverses_unique");
     }
 
+    @Test @DisplayName("8c. eight concurrent reversals of one transaction: one is accepted, seven are refused")
+    void concurrentReversalsLeaveExactlyOne() throws Exception {
+        UUID original = ledger.post(entry("charge-8c", debit(cash, 500), credit(revenue, 500)));
+
+        // Eight rather than thirty two. The connection pool holds ten by default,
+        // so a larger fleet would have workers waiting on a connection instead of
+        // on the index, and this test would stop measuring what it claims to.
+        int workers = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Optional<Throwable>>> results = new ArrayList<>();
+        for (int i = 0; i < workers; i++) {
+            final int n = i;
+            results.add(pool.submit(() -> {
+                start.await();
+                TenantContext.bind(tenant);
+                try {
+                    // Distinct keys on purpose. A shared key is absorbed by
+                    // ON CONFLICT (tenant_id, idempotency_key) DO NOTHING and every
+                    // caller is handed the same transaction, which is invariant 3 and
+                    // is proved elsewhere. Distinct keys miss that arbiter and leave
+                    // ledger_tx_reverses_unique to decide. It is a partial unique
+                    // index rather than the conflict target, so the loser blocks on
+                    // the winner's xid inside the index and then raises, which is the
+                    // one collision in this schema designed to raise rather than be
+                    // suppressed.
+                    ledger.reverse(tenant, original, "concurrent-reversal-" + n, "refund");
+                    return Optional.<Throwable>empty();
+                } catch (Throwable refused) {
+                    return Optional.of(refused);
+                } finally {
+                    TenantContext.clear();
+                }
+            }));
+        }
+        start.countDown();
+        pool.shutdown();
+        assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+        List<Throwable> refusals = new ArrayList<>();
+        int accepted = 0;
+        for (Future<Optional<Throwable>> r : results) {
+            Optional<Throwable> outcome = r.get();
+            if (outcome.isEmpty()) {
+                accepted++;
+            } else {
+                refusals.add(outcome.get());
+            }
+        }
+
+        assertThat(accepted).as("the partial unique index lets exactly one through").isEqualTo(1);
+        assertThat(refusals).hasSize(workers - 1);
+        for (Throwable refused : refusals) {
+            assertThat(ConstraintRules.of(refused))
+                .as("a loser is told which rule refused it, not handed a rollback it cannot read: " + refused)
+                .contains(ConstraintRules.Rule.ALREADY_REVERSED);
+        }
+        assertThat(count("SELECT count(*) FROM ledger_transactions WHERE reverses_id = ?", original))
+            .as("one reversal on disk, whatever the losers did")
+            .isEqualTo(1);
+        assertThat(ledger.balanceMinor(cash))
+            .as("a second reversal would show here as a refund the ledger never took in")
+            .isZero();
+    }
+
     // ---- 9. concurrency ------------------------------------------------------------
 
+    /**
+     * Invariant 9, and an honest note about what it can and cannot prove.
+     *
+     * <p>The threads here do not contend, and that is a property of the design
+     * rather than a flaw in the test: balances are derived by summing an
+     * append-only table, so concurrent posting INSERTs share no mutable row.
+     * They do take a shared KEY SHARE lock on the two account rows through the
+     * composite foreign key, which is a shared mode and conflicts with nothing.
+     * Measured: running all 32 postings through a single thread leaves this test
+     * passing unchanged, so the concurrency is not what makes it green.
+     *
+     * <p>It is kept because invariant 9 is worth pinning and because 32 workers
+     * do exercise the pool. The contention that can actually go wrong in this
+     * schema is proved by 8c, on the one unique index whose collision is designed
+     * to raise rather than be suppressed.
+     */
     @Test @DisplayName("9. 32 concurrent postings to the same account leave an exact balance")
     void concurrentPostingsStayConsistent() throws Exception {
         int workers = 32;
         ExecutorService pool = Executors.newFixedThreadPool(workers);
         CountDownLatch start = new CountDownLatch(1);
+        List<Future<Object>> results = new ArrayList<>();
         for (int i = 0; i < workers; i++) {
             final int n = i;
-            pool.submit(() -> {
+            results.add(pool.submit(() -> {
                 start.await();
                 TenantContext.bind(tenant);   // ThreadLocal: each worker binds its own
                 try {
@@ -250,11 +335,16 @@ class LedgerInvariantsTest extends PostgresTestBase {
                     TenantContext.clear();
                 }
                 return null;
-            });
+            }));
         }
         start.countDown();
         pool.shutdown();
         assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        // Every future is read. Discarding them swallows a worker's exception and
+        // lets it reappear as an unexplained balance of 310, with no cause.
+        for (Future<Object> r : results) {
+            r.get();
+        }
         assertThat(ledger.balanceMinor(cash)).isEqualTo(320);
         assertThat(ledger.balanceMinor(revenue)).isEqualTo(320);
     }
