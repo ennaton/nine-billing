@@ -28,9 +28,12 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.UNPROCESSABLE_CONTENT, "Unknown metric", e.getMessage());
     }
 
-    // Ahead of the IllegalArgumentException handler below, which this extends.
-    // Spring resolves to the most specific handler, so naming the subtype here
-    // is what separates a currency that does not exist from a domain guard.
+    // UnknownCurrencyException extends IllegalArgumentException, which is
+    // handled below as 422. This one wins, and not because it is written first:
+    // ExceptionHandlerMethodResolver ranks candidates with ExceptionDepthComparator,
+    // so the subtype matches at depth 0 against the supertype's depth 1. Position
+    // in this file carries no meaning, which is the stronger guarantee. Nobody can
+    // break the distinction by reordering these methods.
     @ExceptionHandler(UnknownCurrencyException.class)
     ProblemDetail unknownCurrency(UnknownCurrencyException e) {
         return problem(HttpStatus.BAD_REQUEST, "Unknown currency", e.getMessage());
