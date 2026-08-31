@@ -114,6 +114,47 @@ class BalanceEndpointTest extends PostgresTestBase {
         assertThat(charge.getBody()).containsEntry("chargedMinor", 20);
     }
 
+    private void openAccount(String code, String type, String currency) {
+        TenantContext.bind(tenant);
+        try {
+            jdbc.update("INSERT INTO accounts (id, tenant_id, code, type, currency) VALUES (?, ?, ?, ?, ?)",
+                UUID.randomUUID(), tenant, code, type, currency);
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("a tenant with two currencies is answered in the one that was asked for")
+    void twoCurrenciesAreAnsweredSeparately() {
+        // Charge once. Every price plan is GBP, so this opens a GBP receivable.
+        ResponseEntity<Map<String, Object>> charge = http.exchange("/v1/usage", HttpMethod.POST,
+            new HttpEntity<>(Map.of("eventId", "two-books", "tenantId", tenant,
+                "metric", "agent_seconds", "quantity", 10)), JSON);
+        assertThat(charge.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        // A second book for the same role. This is what BI13.3 makes possible and
+        // the old key made impossible: one tenant, one code, two currencies.
+        openAccount("receivable", "ASSET", "USD");
+        assertThat(accountsOf(tenant))
+            .as("the tenant now holds a receivable in each currency")
+            .isEqualTo(3);
+
+        // The currency names which book to read, it does not relabel whichever one
+        // the lookup happened to reach first. Without that, this endpoint reports a
+        // GBP balance as USD, which is the harm D3 was about, reappearing through a
+        // different door once the key allows two accounts.
+        ResponseEntity<Map<String, Object>> gbp = balance("GBP");
+        assertThat(gbp.getBody()).containsEntry("owedMinor", 20);
+        assertThat(gbp.getBody()).containsEntry("currency", "GBP");
+
+        ResponseEntity<Map<String, Object>> usd = balance("USD");
+        assertThat(usd.getBody())
+            .as("nothing was ever charged in USD, so the answer is zero rather than the GBP figure")
+            .containsEntry("owedMinor", 0);
+        assertThat(usd.getBody()).containsEntry("currency", "USD");
+    }
+
     @Test
     @DisplayName("a quantity that would overflow the price is refused, not a 500")
     void anAbsurdQuantityIsRefused() {
