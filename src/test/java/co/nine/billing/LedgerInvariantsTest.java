@@ -8,12 +8,15 @@ import co.nine.billing.domain.LedgerEntry;
 import co.nine.billing.domain.Money;
 import co.nine.billing.domain.Posting;
 import co.nine.billing.domain.UnbalancedEntryException;
+import co.nine.billing.infrastructure.ConstraintRules;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import co.nine.billing.auth.TenantContext;
@@ -118,6 +121,45 @@ class LedgerInvariantsTest extends PostgresTestBase {
 
     // ---- 3. idempotency ------------------------------------------------------------
 
+    @Test @DisplayName("2d. the balance check refuses rather than passes when it cannot see the postings")
+    void balanceCheckCannotPassOnWhatItCannotSee() {
+        // assert_transaction_balances is SECURITY INVOKER, so its own SELECT over
+        // postings runs under the caller's row-level security. Clearing the tenant
+        // before COMMIT used to hide every row from it: the aggregate ran over an
+        // empty set, nothing was raised, and a transaction of 1000 against 999
+        // committed with the imbalance on disk. Fail closed on the read had become
+        // fail open on the invariant.
+        //
+        // Nothing in the service clears the GUC midway today, because it is written
+        // at connection checkout and the same connection is held through COMMIT.
+        // This test exists so that stays a fact rather than a coincidence.
+        UUID tx = UUID.randomUUID();
+        assertThatThrownBy(() -> jdbc.execute((java.sql.Connection c) -> {
+            c.setAutoCommit(false);
+            try (var st = c.createStatement()) {
+                st.execute("INSERT INTO ledger_transactions (id, tenant_id, idempotency_key, description, occurred_at) VALUES ('"
+                    + tx + "','" + tenant + "','raw-blind','bypass', now())");
+                st.execute("INSERT INTO postings (transaction_id, account_id, direction, amount_minor, currency) VALUES ('"
+                    + tx + "','" + cash + "','DEBIT',1000,'GBP'),('" + tx + "','" + revenue + "','CREDIT',999,'GBP')");
+                st.execute("SELECT set_config('app.tenant_id', '', false)");
+            }
+            c.commit();
+            return null;
+        }))
+            // Measured, and pinned because it is a contract: XX000 is not an
+            // integrity violation, so ApiExceptionHandler's 409 branch does not
+            // claim it and the caller is not told it broke a rule. A blind check
+            // is this service's defect and answers like one.
+            .isInstanceOf(org.springframework.jdbc.UncategorizedSQLException.class)
+            .hasMessageContaining("cannot see transaction");
+
+        // Read back outside RLS: the writer cannot report on rows it cannot see.
+        assertThat(superuser().queryForObject(
+            "SELECT count(*) FROM postings WHERE transaction_id = ?", Long.class, tx))
+            .as("nothing from a refused transaction may be on disk")
+            .isZero();
+    }
+
     @Test @DisplayName("3. replaying an idempotency key returns the same transaction and posts nothing new")
     void idempotencyKeyReplayIsNoOp() {
         UUID first = ledger.post(entry("charge-2", debit(cash, 500), credit(revenue, 500)));
@@ -144,6 +186,52 @@ class LedgerInvariantsTest extends PostgresTestBase {
             .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> Posting.debit(cash, Money.of(-100, "GBP")))
             .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test @DisplayName("5b. the database refuses zero and negative too, even when Java is bypassed")
+    void nonPositiveAmountsRefusedByTheDatabase() {
+        // Test 5 above proves the Java half: Posting.debit throws before any SQL
+        // is issued, which is exactly why it cannot prove the other half. Nothing
+        // in this suite ever sent a non positive amount to Postgres, so removing
+        // CHECK (amount_minor > 0) would have left this file green. The only test
+        // that reached the constraint was about mapping SQLStates to rules and it
+        // only ever sent zero.
+        UUID tx = UUID.randomUUID();
+        jdbc.update("INSERT INTO ledger_transactions (id, tenant_id, idempotency_key, description, occurred_at)"
+            + " VALUES (?, ?, ?, ?, now())", tx, tenant, "raw-nonpositive", "bypass");
+
+        // The rule is asserted by name, not by the fact that something was
+        // refused. postings_amount_minor_check and the balance trigger both
+        // raise 23514, so a test that only checked for a refusal could not tell
+        // which one answered, and would still pass if the CHECK were gone and
+        // the imbalance caught it instead.
+        assertThat(ruleFor(() -> rawPosting(jdbc, tx, 0)))
+            .as("zero, refused by the constraint rather than by the balance trigger")
+            .contains(ConstraintRules.Rule.AMOUNT_NOT_POSITIVE);
+        assertThat(ruleFor(() -> rawPosting(jdbc, tx, -100)))
+            .as("negative, which no test had ever sent to the database")
+            .contains(ConstraintRules.Rule.AMOUNT_NOT_POSITIVE);
+
+        // Twice over, like immutability. A CHECK constraint binds the owner as
+        // well, so the principal that can reach past row level security cannot
+        // reach past this.
+        assertThat(ruleFor(() -> rawPosting(superuser(), tx, -1)))
+            .as("the owner is refused by the same constraint")
+            .contains(ConstraintRules.Rule.AMOUNT_NOT_POSITIVE);
+    }
+
+    private void rawPosting(JdbcTemplate on, UUID tx, long minor) {
+        on.update("INSERT INTO postings (transaction_id, account_id, direction, amount_minor, currency)"
+            + " VALUES (?, ?, 'DEBIT', ?, 'GBP')", tx, cash, minor);
+    }
+
+    private Optional<ConstraintRules.Rule> ruleFor(Runnable write) {
+        try {
+            write.run();
+            throw new AssertionError("the database was expected to refuse this write");
+        } catch (RuntimeException refused) {
+            return ConstraintRules.of(refused);
+        }
     }
 
     // ---- 6 and 7. immutability -----------------------------------------------------
@@ -199,16 +287,98 @@ class LedgerInvariantsTest extends PostgresTestBase {
             .hasMessageContaining("ledger_tx_reverses_unique");
     }
 
+    @Test @DisplayName("8c. eight concurrent reversals of one transaction: one is accepted, seven are refused")
+    void concurrentReversalsLeaveExactlyOne() throws Exception {
+        UUID original = ledger.post(entry("charge-8c", debit(cash, 500), credit(revenue, 500)));
+
+        // Eight rather than thirty two. The connection pool holds ten by default,
+        // so a larger fleet would have workers waiting on a connection instead of
+        // on the index, and this test would stop measuring what it claims to.
+        int workers = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Optional<Throwable>>> results = new ArrayList<>();
+        for (int i = 0; i < workers; i++) {
+            final int n = i;
+            results.add(pool.submit(() -> {
+                start.await();
+                TenantContext.bind(tenant);
+                try {
+                    // Distinct keys on purpose. A shared key is absorbed by
+                    // ON CONFLICT (tenant_id, idempotency_key) DO NOTHING and every
+                    // caller is handed the same transaction, which is invariant 3 and
+                    // is proved elsewhere. Distinct keys miss that arbiter and leave
+                    // ledger_tx_reverses_unique to decide. It is a partial unique
+                    // index rather than the conflict target, so the loser blocks on
+                    // the winner's xid inside the index and then raises, which is the
+                    // one collision in this schema designed to raise rather than be
+                    // suppressed.
+                    ledger.reverse(tenant, original, "concurrent-reversal-" + n, "refund");
+                    return Optional.<Throwable>empty();
+                } catch (Throwable refused) {
+                    return Optional.of(refused);
+                } finally {
+                    TenantContext.clear();
+                }
+            }));
+        }
+        start.countDown();
+        pool.shutdown();
+        assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+        List<Throwable> refusals = new ArrayList<>();
+        int accepted = 0;
+        for (Future<Optional<Throwable>> r : results) {
+            Optional<Throwable> outcome = r.get();
+            if (outcome.isEmpty()) {
+                accepted++;
+            } else {
+                refusals.add(outcome.get());
+            }
+        }
+
+        assertThat(accepted).as("the partial unique index lets exactly one through").isEqualTo(1);
+        assertThat(refusals).hasSize(workers - 1);
+        for (Throwable refused : refusals) {
+            assertThat(ConstraintRules.of(refused))
+                .as("a loser is told which rule refused it, not handed a rollback it cannot read: " + refused)
+                .contains(ConstraintRules.Rule.ALREADY_REVERSED);
+        }
+        assertThat(count("SELECT count(*) FROM ledger_transactions WHERE reverses_id = ?", original))
+            .as("one reversal on disk, whatever the losers did")
+            .isEqualTo(1);
+        assertThat(ledger.balanceMinor(cash))
+            .as("a second reversal would show here as a refund the ledger never took in")
+            .isZero();
+    }
+
     // ---- 9. concurrency ------------------------------------------------------------
 
+    /**
+     * Invariant 9, and an honest note about what it can and cannot prove.
+     *
+     * <p>The threads here do not contend, and that is a property of the design
+     * rather than a flaw in the test: balances are derived by summing an
+     * append-only table, so concurrent posting INSERTs share no mutable row.
+     * They do take a shared KEY SHARE lock on the two account rows through the
+     * composite foreign key, which is a shared mode and conflicts with nothing.
+     * Measured: running all 32 postings through a single thread leaves this test
+     * passing unchanged, so the concurrency is not what makes it green.
+     *
+     * <p>It is kept because invariant 9 is worth pinning and because 32 workers
+     * do exercise the pool. The contention that can actually go wrong in this
+     * schema is proved by 8c, on the one unique index whose collision is designed
+     * to raise rather than be suppressed.
+     */
     @Test @DisplayName("9. 32 concurrent postings to the same account leave an exact balance")
     void concurrentPostingsStayConsistent() throws Exception {
         int workers = 32;
         ExecutorService pool = Executors.newFixedThreadPool(workers);
         CountDownLatch start = new CountDownLatch(1);
+        List<Future<Object>> results = new ArrayList<>();
         for (int i = 0; i < workers; i++) {
             final int n = i;
-            pool.submit(() -> {
+            results.add(pool.submit(() -> {
                 start.await();
                 TenantContext.bind(tenant);   // ThreadLocal: each worker binds its own
                 try {
@@ -217,11 +387,16 @@ class LedgerInvariantsTest extends PostgresTestBase {
                     TenantContext.clear();
                 }
                 return null;
-            });
+            }));
         }
         start.countDown();
         pool.shutdown();
         assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        // Every future is read. Discarding them swallows a worker's exception and
+        // lets it reappear as an unexplained balance of 310, with no cause.
+        for (Future<Object> r : results) {
+            r.get();
+        }
         assertThat(ledger.balanceMinor(cash)).isEqualTo(320);
         assertThat(ledger.balanceMinor(revenue)).isEqualTo(320);
     }
