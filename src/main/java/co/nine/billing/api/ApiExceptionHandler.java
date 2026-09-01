@@ -12,16 +12,26 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ResponseEntity;
+import org.springframework.lang.Nullable;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 /**
  * Every error leaves as application/problem+json. The status codes are chosen
  * so a client can act without parsing the message: 409 means "already done or
  * conflicts", 422 means "your request is well formed but cannot be honored",
  * 400 means "fix the request".
+ *
+ * <p>Extending ResponseEntityExceptionHandler puts the twenty exceptions Spring
+ * throws before a handler runs under the same contract. Without it they reached
+ * the default error controller and left as application/json.
  */
 @RestControllerAdvice
-public class ApiExceptionHandler {
+public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler(UnknownMetricException.class)
     ProblemDetail unknownMetric(UnknownMetricException e) {
@@ -70,12 +80,17 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.NOT_FOUND, "Not found", "no such resource for this tenant");
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    ProblemDetail validation(MethodArgumentNotValidException e) {
+    // An override rather than an @ExceptionHandler: the parent already maps this
+    // exception, and two mappings for one type in one advice class is ambiguous.
+    @Override
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(
+            MethodArgumentNotValidException e, HttpHeaders headers,
+            HttpStatusCode status, WebRequest request) {
         String fields = e.getBindingResult().getFieldErrors().stream()
             .map(f -> f.getField() + ": " + f.getDefaultMessage())
             .reduce((a, b) -> a + "; " + b).orElse("invalid request");
-        return problem(HttpStatus.BAD_REQUEST, "Validation failed", fields);
+        return handleExceptionInternal(e, problem(HttpStatus.BAD_REQUEST, "Validation failed", fields),
+            headers, HttpStatus.BAD_REQUEST, request);
     }
 
     private static ProblemDetail problem(HttpStatus status, String title, String detail) {
