@@ -27,6 +27,9 @@ spring:
       # nine_app's password and that is BI16.3, still open; this is the
       # mechanism that closes it without inventing anything.
       operatorPassword: ${NINE_OPERATOR_PASSWORD:nine_operator_dev}
+      # V12 sets nine_app's password from this. Same variable as the datasource
+      # above, so a deployment cannot supply one and forget the other.
+      appPassword: ${SPRING_DATASOURCE_PASSWORD:nine_app_dev}
 
 nine:
   billing:

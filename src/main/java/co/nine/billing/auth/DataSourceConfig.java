@@ -29,7 +29,7 @@ public class DataSourceConfig {
     static BeanPostProcessor tenantAwareDataSourceWrapper(
             @Value("${spring.datasource.url}") String url,
             @Value("${nine.billing.operator.username:nine_operator}") String username,
-            @Value("${nine.billing.operator.password:nine_operator_dev}") String password) {
+            @Value("${nine.billing.operator.password}") String password) {
 
         // Lazy, and lazily memoised. The post processor runs before Flyway, and
         // V9 is what creates nine_operator, so opening a connection at
