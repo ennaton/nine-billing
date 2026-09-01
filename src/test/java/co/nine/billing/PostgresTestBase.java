@@ -25,7 +25,9 @@ public abstract class PostgresTestBase {
         // runtime: nine_app (created by V4)
         r.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         r.add("spring.datasource.username", () -> "nine_app");
-        r.add("spring.datasource.password", () -> "nine_app_dev");
+        // No password here on purpose: V12 sets it from the same default the
+        // datasource resolves, so a copy would hide a drift between the two.
+
         // migrations: owner
         r.add("spring.flyway.url", POSTGRES::getJdbcUrl);
         r.add("spring.flyway.user", POSTGRES::getUsername);
