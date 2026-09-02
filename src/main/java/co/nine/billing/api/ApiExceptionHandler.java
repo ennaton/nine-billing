@@ -11,17 +11,23 @@ import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.core.MethodParameter;
 import org.springframework.http.ResponseEntity;
-import org.springframework.lang.Nullable;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+import java.util.stream.Collectors;
+
 /**
- * Every error leaves as application/problem+json. The status codes are chosen
+ * Errors this service raises leave as application/problem+json, and so do the
+ * ones Spring raises before a handler runs. An unhandled exception is not
+ * covered: it reaches the default error controller as application/json, which
+ * the 28 August audit recorded and BI15 does not include. The status codes are chosen
  * so a client can act without parsing the message: 409 means "already done or
  * conflicts", 422 means "your request is well formed but cannot be honored",
  * 400 means "fix the request".
@@ -80,20 +86,51 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.NOT_FOUND, "Not found", "no such resource for this tenant");
     }
 
-    // An override rather than an @ExceptionHandler: the parent already maps this
-    // exception, and two mappings for one type in one advice class is ambiguous.
+    // Overrides rather than @ExceptionHandler methods: the parent already maps
+    // both types, and two mappings for one type in one advice class is ambiguous.
     @Override
     protected ResponseEntity<Object> handleMethodArgumentNotValid(
             MethodArgumentNotValidException e, HttpHeaders headers,
             HttpStatusCode status, WebRequest request) {
         String fields = e.getBindingResult().getFieldErrors().stream()
             .map(f -> f.getField() + ": " + f.getDefaultMessage())
-            .reduce((a, b) -> a + "; " + b).orElse("invalid request");
-        return handleExceptionInternal(e, problem(HttpStatus.BAD_REQUEST, "Validation failed", fields),
-            headers, HttpStatus.BAD_REQUEST, request);
+            .sorted().collect(Collectors.joining("; "));
+        return validationFailed(e, fields, headers, status, request);
     }
 
-    private static ProblemDetail problem(HttpStatus status, String title, String detail) {
+    // A rejected @RequestParam arrives here, not above, and the inherited answer
+    // is "Validation failure" with no parameter named. One service should not
+    // have two shapes for the same 400.
+    @Override
+    protected ResponseEntity<Object> handleHandlerMethodValidationException(
+            HandlerMethodValidationException e, HttpHeaders headers,
+            HttpStatusCode status, WebRequest request) {
+        // A constrained return value fails with 500, and that is our defect, not
+        // the caller's. The parent answers it opaquely, which is what a server
+        // fault should say.
+        if (e.isForReturnValue()) {
+            return super.handleHandlerMethodValidationException(e, headers, status, request);
+        }
+        String params = e.getParameterValidationResults().stream()
+            .flatMap(r -> r.getResolvableErrors().stream()
+                .map(err -> parameterName(r.getMethodParameter()) + ": " + err.getDefaultMessage()))
+            .sorted().collect(Collectors.joining("; "));
+        return validationFailed(e, params, headers, status, request);
+    }
+
+    private ResponseEntity<Object> validationFailed(Exception e, String detail, HttpHeaders headers,
+                                                    HttpStatusCode status, WebRequest request) {
+        return handleExceptionInternal(e,
+            problem(status, "Validation failed", detail.isEmpty() ? "invalid request" : detail),
+            headers, status, request);
+    }
+
+    private static String parameterName(MethodParameter p) {
+        String name = p.getParameterName();
+        return name != null ? name : "parameter " + p.getParameterIndex();
+    }
+
+    private static ProblemDetail problem(HttpStatusCode status, String title, String detail) {
         ProblemDetail p = ProblemDetail.forStatusAndDetail(status, detail);
         p.setTitle(title);
         return p;

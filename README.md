@@ -106,7 +106,7 @@ Send the same `eventId` again and you get `200`, `replayed: true`, the same `tra
 | `GET` | `/v1/reconciliation/runs` | Recent runs with per-kind drift counts and a `clean` flag |
 | `GET` | `/v1/reconciliation/runs/{id}/findings` | Every drift found in one run |
 
-Errors are `application/problem+json`: `401` no or bad key, `400` fix the request, `422` well formed but cannot be honored (unknown metric, unbalanced), `409` already done or conflicts, `404` no such transaction.
+Errors are `application/problem+json`: `401` no or bad key, `400` fix the request (a field, a parameter or an unparseable path), `404` no such transaction or no such route, `405` wrong method, `406` unacceptable `Accept`, `409` already done or conflicts, `413` body too large, `415` unsupported content type, `422` well formed but cannot be honored (unknown metric, unbalanced). Two answers are not: an unhandled failure, recorded in [the audit](docs/artifacts/2026-08-28-audit-verification.md), and a method the container refuses before Spring routes it, such as `TRACE`. Both keep Boot's default shape.
 
 Prices live in `price_plans` (V2 migration): `events_ingested`, `agent_seconds`, `seats`. Minor units, GBP.
 
