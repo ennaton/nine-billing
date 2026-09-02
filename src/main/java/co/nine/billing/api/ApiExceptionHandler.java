@@ -3,6 +3,7 @@ package co.nine.billing.api;
 import co.nine.billing.auth.TenantMismatchException;
 import co.nine.billing.domain.DuplicateEntryException;
 import co.nine.billing.domain.UnbalancedEntryException;
+import co.nine.billing.domain.Quoted;
 import co.nine.billing.domain.UnknownCurrencyException;
 import co.nine.billing.infrastructure.ConstraintRules;
 import co.nine.billing.metering.UnknownMetricException;
@@ -11,6 +12,7 @@ import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.http.HttpHeaders;
@@ -116,6 +118,21 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 .map(err -> parameterName(r.getMethodParameter()) + ": " + err.getDefaultMessage()))
             .sorted().collect(Collectors.joining("; "));
         return validationFailed(e, params, headers, status, request);
+    }
+
+    // The inherited answer quotes the whole Content-Type back, so a 3000
+    // character header produced a 3143 byte body. Currencies already bounds a
+    // refused value and says why; this is the same rule, and 64 leaves room for
+    // the longest type this service speaks plus its parameters.
+    @Override
+    protected ResponseEntity<Object> handleHttpMediaTypeNotSupported(
+            HttpMediaTypeNotSupportedException e, HttpHeaders headers,
+            HttpStatusCode status, WebRequest request) {
+        String type = e.getContentType() == null ? "" : e.getContentType().toString();
+        return handleExceptionInternal(e,
+            problem(status, "Unsupported content type",
+                "Content-Type " + Quoted.value(type, 64) + " is not supported"),
+            headers, status, request);
     }
 
     private ResponseEntity<Object> validationFailed(Exception e, String detail, HttpHeaders headers,

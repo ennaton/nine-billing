@@ -77,6 +77,20 @@ class FrameworkErrorsTest extends PostgresTestBase {
     }
 
     @Test
+    @DisplayName("a refused content type is quoted back bounded, so the answer does not follow the request")
+    void unsupportedMediaTypeIsBounded() {
+        String huge = "application/" + "a".repeat(3000);
+        HttpHeaders h = new HttpHeaders();
+        h.set("Content-Type", huge);
+        ResponseEntity<String> res = authed().exchange("/v1/usage", HttpMethod.POST,
+            new HttpEntity<>("x", h), String.class);
+
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        assertThat(res.getBody()).hasSizeLessThan(300);
+        assertThat(res.getBody()).contains("...");
+    }
+
+    @Test
     @DisplayName("a route that does not exist is problem+json")
     void noSuchRoute() {
         ResponseEntity<String> res = send(HttpMethod.GET, "/v1/nope", null, null);

@@ -119,7 +119,7 @@ X-Api-Key: {{apiKey}}
 GET {{host}}/actuator/health
 
 ### 11. Reconciliation: run it now. Expect clean: true, findings: [].
-POST {{host}}/v1/reconciliation/run
+POST {{host}}/admin/reconciliation/run
 X-Api-Key: {{apiKey}}
 
 ### 12. Recent reconciliation runs. The scheduled job also writes here every 15 minutes.
@@ -127,5 +127,5 @@ GET {{host}}/v1/reconciliation/runs
 X-Api-Key: {{apiKey}}
 
 ### 13. Findings of a run (paste an id from step 12). Empty on a healthy ledger.
-GET {{host}}/v1/reconciliation/runs/1/findings
+GET {{host}}/admin/reconciliation/runs/1/findings
 X-Api-Key: {{apiKey}}
