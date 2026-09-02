@@ -9,14 +9,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Compares what metering says it charged with what the ledger holds, on a
- * schedule and on demand. A clean run is recorded too: "we checked and found
- * nothing" is evidence, silence is not.
+ * schedule and on demand. A clean run is recorded too, and so is a run that
+ * could not finish: "we checked and found nothing" is evidence, silence is not,
+ * and neither is a gap where a check should have been.
  */
 @Service
 public class ReconciliationService {
@@ -70,12 +72,37 @@ public class ReconciliationService {
      * left a tenant bound, so it was measuring tenant context, not operator.
      */
     public Report run() {
-        return OperatorContext.run(() -> tx.execute(status -> compare()));
+        Instant started = Instant.now();
+        return OperatorContext.run(() -> {
+            try {
+                return tx.execute(status -> compare(started));
+            } catch (RuntimeException e) {
+                // Outside tx.execute because the failed transaction is already
+                // aborted and refuses every further statement with 25P02, and
+                // inside OperatorContext.run because runs_write_operator would
+                // refuse the row under nine_app, silently.
+                try {
+                    // toString rather than getMessage: findings.detail is NOT NULL
+                    // and a RuntimeException may carry no message, which would
+                    // take the whole record down with it.
+                    tx.execute(status -> repo.recordFailure(started, Instant.now(), failureCode(e), e.toString()));
+                } catch (RuntimeException recordingFailed) {
+                    e.addSuppressed(recordingFailed);
+                }
+                throw e;
+            }
+        });
     }
 
-    private Report compare() {
-        Instant started = Instant.now();
+    /** SQLState when the database refused, the exception's name otherwise. Never null: the row needs a reason or it is refused. */
+    private static String failureCode(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof SQLException sql && sql.getSQLState() != null) return sql.getSQLState();
+        }
+        return e.getClass().getSimpleName();
+    }
 
+    private Report compare(Instant started) {
         List<Finding> mismatches = repo.amountMismatches();
         List<Finding> orphans    = repo.orphanCharges();
         List<Finding> unbalanced = repo.unbalancedTransactions();

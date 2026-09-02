@@ -41,7 +41,7 @@ Two of them are checked twice: once in Java so the caller gets a clear error bef
 
 **Plain JDBC, no ORM.** The guarantees live in the schema. JDBC keeps every statement one step from the constraint that backs it; an ORM would hide the exact moment the database says no.
 
-**Reconciliation is a job, and it records clean runs too.** `usage_charges` is what metering believes it charged; `postings` is what the ledger holds. They are written in one transaction, so in theory they cannot disagree. In practice a manual SQL fix, a bypassed trigger or a bug in this service can split them, and the only way to know is to compare. Three set-based queries run every 15 minutes (and on `POST /v1/reconciliation/run`): amount mismatch, orphan charge, unbalanced transaction. Every run is recorded, clean or not, because "we checked and found nothing" is evidence and silence is not. The test for this deliberately corrupts the ledger as a superuser and asserts the drift is reported.
+**Reconciliation is a job, and it records clean runs too.** `usage_charges` is what metering believes it charged; `postings` is what the ledger holds. They are written in one transaction, so in theory they cannot disagree. In practice a manual SQL fix, a bypassed trigger or a bug in this service can split them, and the only way to know is to compare. Three set-based queries run every 15 minutes (and on `POST /admin/reconciliation/run`): amount mismatch, orphan charge, unbalanced transaction. Every run is recorded, clean or not, and so is a run that could not finish: it carries the SQLState and no counts, because a zero would claim it counted and found none. The bound is worth stating: the row is itself a write, so a failure leaves one only while that write can happen. If the database is gone the log is all there is, which is why this does not replace an external signal for a job that never ran. The test for this deliberately corrupts the ledger as a superuser and asserts the drift is reported.
 
 **Two database roles, on purpose.** Flyway migrates as the owner. The service runs as `nine_app`: not a superuser, not the owner of any table, and holding no `UPDATE` or `DELETE` grant on ledger tables at all. Superuser and owner both bypass row-level security, so the runtime role must be neither or every policy is decoration. The immutability tests prove both layers: `nine_app` gets `permission denied` before the trigger is consulted; the owner gets through the grant and is stopped by the trigger.
 
@@ -102,9 +102,9 @@ Send the same `eventId` again and you get `200`, `replayed: true`, the same `tra
 | `GET` | `/v1/tenants/{id}/ledger?limit=` | Recent ledger lines, newest first |
 | `POST` | `/v1/ledger/{txId}/reverse` | Reverse a transaction. A new transaction; nothing deleted. Second attempt is `409` |
 | `POST` | `/admin/keys` | Mint a tenant's API key. Bootstrap secret required. Plaintext shown once |
-| `POST` | `/v1/reconciliation/run` | Compare metering against the ledger now; returns the report |
+| `POST` | `/admin/reconciliation/run` | Compare metering against the ledger now; returns the report |
 | `GET` | `/v1/reconciliation/runs` | Recent runs with per-kind drift counts and a `clean` flag |
-| `GET` | `/v1/reconciliation/runs/{id}/findings` | Every drift found in one run |
+| `GET` | `/admin/reconciliation/runs/{id}/findings` | Every drift found in one run, and why a run failed. Operator only |
 
 Errors are `application/problem+json`: `401` no or bad key, `400` fix the request (a field, a parameter or an unparseable path), `404` no such transaction or no such route, `405` wrong method, `406` unacceptable `Accept`, `409` already done or conflicts, `413` body too large, `415` unsupported content type, `422` well formed but cannot be honored (unknown metric, unbalanced). Two answers are not: an unhandled failure, recorded in [the audit](docs/artifacts/2026-08-28-audit-verification.md), and a method the container refuses before Spring routes it, such as `TRACE`. Both keep Boot's default shape.
 

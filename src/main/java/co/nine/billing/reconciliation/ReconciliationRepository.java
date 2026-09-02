@@ -109,8 +109,9 @@ public class ReconciliationRepository {
         return runId;
     }
 
-    public record RunSummary(long id, Instant startedAt, Instant finishedAt, long chargesChecked,
-                             long amountMismatches, long orphanCharges, long unbalancedTxs, boolean clean) {}
+    /** Counters are boxed: a failed run counted nothing, and getLong would read that back as zero. */
+    public record RunSummary(long id, Instant startedAt, Instant finishedAt, Long chargesChecked,
+                             Long amountMismatches, Long orphanCharges, Long unbalancedTxs, boolean clean) {}
 
     public List<RunSummary> recentRuns(int limit) {
         return jdbc.query("""
@@ -118,8 +119,26 @@ public class ReconciliationRepository {
               FROM reconciliation_runs ORDER BY started_at DESC LIMIT ?
             """,
             (rs, i) -> new RunSummary(rs.getLong(1), rs.getTimestamp(2).toInstant(), rs.getTimestamp(3).toInstant(),
-                rs.getLong(4), rs.getLong(5), rs.getLong(6), rs.getLong(7), rs.getBoolean(8)),
+                rs.getObject(4, Long.class), rs.getObject(5, Long.class), rs.getObject(6, Long.class),
+                rs.getObject(7, Long.class), rs.getBoolean(8)),
             limit);
+    }
+
+    /**
+     * Both inserts in one call because the finding's foreign key needs the run,
+     * and the caller runs this in a transaction of its own. Only the code goes
+     * on the run: every tenant reads that table, and a driver message carries
+     * the statement and sometimes a value.
+     */
+    public long recordFailure(Instant started, Instant finished, String failureCode, String detail) {
+        Long runId = jdbc.queryForObject("""
+            INSERT INTO reconciliation_runs (started_at, finished_at, failure_code)
+            VALUES (?, ?, ?) RETURNING id
+            """, Long.class, Timestamp.from(started), Timestamp.from(finished), failureCode);
+
+        jdbc.update("INSERT INTO reconciliation_findings (run_id, kind, detail) VALUES (?, 'RUN_FAILED', ?)",
+            runId, detail);
+        return runId;
     }
 
     public List<Finding> findingsOf(long runId) {
