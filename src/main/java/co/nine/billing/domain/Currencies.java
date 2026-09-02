@@ -41,11 +41,8 @@ public final class Currencies {
             // The code is quoted back so the caller can see what we read, and
             // truncated because it arrives from the query string and nothing
             // upstream bounds its length.
-            throw new UnknownCurrencyException(quote(code) + " is not an ISO 4217 currency code");
+            throw new UnknownCurrencyException(
+                Quoted.value(code, QUOTED) + " is not an ISO 4217 currency code");
         }
-    }
-
-    private static String quote(String code) {
-        return code.length() <= QUOTED ? code : code.substring(0, QUOTED) + "...";
     }
 }
