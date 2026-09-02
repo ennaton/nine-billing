@@ -7,6 +7,7 @@ import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -36,8 +37,9 @@ class FrameworkErrorsTest extends PostgresTestBase {
     TestRestTemplate authed() {
         HttpHeaders h = new HttpHeaders();
         h.set("X-Bootstrap-Secret", "test-bootstrap-secret");
-        ResponseEntity<Map> res = raw.postForEntity("/admin/keys",
-            new HttpEntity<>(Map.of("tenantId", TENANT, "label", "framework-errors"), h), Map.class);
+        ResponseEntity<Map<String, Object>> res = raw.exchange("/admin/keys", HttpMethod.POST,
+            new HttpEntity<>(Map.of("tenantId", TENANT, "label", "framework-errors"), h),
+            new ParameterizedTypeReference<>() { });
         String key = (String) res.getBody().get("apiKey");
         return new TestRestTemplate(new RestTemplateBuilder()
             .baseUri(raw.getRootUri()).defaultHeader("X-Api-Key", key));
@@ -80,6 +82,55 @@ class FrameworkErrorsTest extends PostgresTestBase {
         ResponseEntity<String> res = send(HttpMethod.GET, "/v1/nope", null, null);
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(res.getHeaders().getContentType().isCompatibleWith(PROBLEM)).isTrue();
+    }
+
+    @Test
+    @DisplayName("a rejected query parameter names the parameter, like a rejected body field does")
+    void parameterValidationNamesTheParameter() {
+        ResponseEntity<String> res = send(HttpMethod.GET, "/v1/tenants/" + TENANT + "/ledger?limit=0", null, null);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.getHeaders().getContentType().isCompatibleWith(PROBLEM)).isTrue();
+        // The body path answers "quantity: must be ...". A parameter must not
+        // answer "Validation failure" and leave the caller guessing which one.
+        assertThat(res.getBody()).contains("limit");
+        assertThat(res.getBody()).contains("\"title\":\"Validation failed\"");
+    }
+
+    @Test
+    @DisplayName("a rejected body field and a rejected parameter carry the same title")
+    void oneValidationShape() {
+        ResponseEntity<String> param = send(HttpMethod.GET, "/v1/tenants/" + TENANT + "/ledger?limit=0", null, null);
+        ResponseEntity<String> body = send(HttpMethod.POST, "/v1/usage", MediaType.APPLICATION_JSON,
+            "{\"eventId\":\"vshape\",\"tenantId\":\"" + TENANT + "\",\"metric\":\"agent_seconds\",\"quantity\":0}");
+        assertThat(param.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(body.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(param.getBody()).contains("\"title\":\"Validation failed\"");
+        assertThat(body.getBody()).contains("\"title\":\"Validation failed\"");
+    }
+
+    @Test
+    @DisplayName("the field list is alphabetical, so the same request always reads the same")
+    void fieldListIsOrdered() {
+        String body = "{\"eventId\":\"\",\"metric\":\"\",\"quantity\":0}";
+        ResponseEntity<String> first = send(HttpMethod.POST, "/v1/usage", MediaType.APPLICATION_JSON, body);
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(first.getBody()).contains(
+            "eventId: must not be blank; metric: must not be blank; quantity: must be greater than or equal to 1");
+        // Bean validation reports in no particular order, so the assertion above
+        // only holds because the handler sorts. Repeated to catch a lucky pass.
+        for (int i = 0; i < 4; i++) {
+            assertThat(send(HttpMethod.POST, "/v1/usage", MediaType.APPLICATION_JSON, body).getBody())
+                .isEqualTo(first.getBody());
+        }
+    }
+
+    @Test
+    @DisplayName("the other route with a constrained parameter answers the same way")
+    void reconciliationParameterIsNamedToo() {
+        ResponseEntity<String> res = send(HttpMethod.GET, "/v1/reconciliation/runs?limit=0", null, null);
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(res.getBody()).contains("limit: must be greater than or equal to 1");
+        assertThat(res.getBody()).contains("\"title\":\"Validation failed\"");
     }
 
     @Test
