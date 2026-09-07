@@ -113,10 +113,15 @@ public class ReconciliationRepository {
     public record RunSummary(long id, Instant startedAt, Instant finishedAt, Long chargesChecked,
                              Long amountMismatches, Long orphanCharges, Long unbalancedTxs, boolean clean) {}
 
+    /**
+     * Newest first by id, which is write order. A run is recorded when it ends, so
+     * a long run that blocked holds the higher id and the older start, and ordering
+     * by started_at would let a short run that overtook it stand as the last word.
+     */
     public List<RunSummary> recentRuns(int limit) {
         return jdbc.query("""
             SELECT id, started_at, finished_at, charges_checked, amount_mismatches, orphan_charges, unbalanced_txs, clean
-              FROM reconciliation_runs ORDER BY started_at DESC LIMIT ?
+              FROM reconciliation_runs ORDER BY id DESC LIMIT ?
             """,
             (rs, i) -> new RunSummary(rs.getLong(1), rs.getTimestamp(2).toInstant(), rs.getTimestamp(3).toInstant(),
                 rs.getObject(4, Long.class), rs.getObject(5, Long.class), rs.getObject(6, Long.class),

@@ -4,12 +4,14 @@ import co.nine.billing.auth.OperatorContext;
 import co.nine.billing.reconciliation.ReconciliationRepository.Finding;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,9 +38,24 @@ public class ReconciliationService {
      */
     private final TransactionTemplate tx;
 
-    public ReconciliationService(ReconciliationRepository repo, PlatformTransactionManager txManager) {
+    public ReconciliationService(ReconciliationRepository repo, PlatformTransactionManager txManager,
+                                 @Value("${nine.billing.reconcile.timeout:PT2M}") Duration timeout) {
+        // Spring reads a unitless number as milliseconds, so 120 means 120 ms and
+        // truncates to zero seconds, which fails every statement before it is
+        // issued and records nothing. A cast that wraps is the same problem from
+        // the other end: 1193047 hours arrives as 1904 seconds.
+        long seconds = timeout.toSeconds();
+        if (seconds < 1 || seconds > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("nine.billing.reconcile.timeout must be between 1s and "
+                + Integer.MAX_VALUE + "s, was " + timeout + ": a unitless number binds as milliseconds");
+        }
         this.repo = repo;
         this.tx = new TransactionTemplate(txManager);
+        // Without this a run that waits on a lock waits forever on the scheduler
+        // thread and the job never fires again. A statement already in flight
+        // when the deadline passes ends as 57014; one issued after it ends as
+        // TransactionTimedOutException. Both are recorded as the failure.
+        this.tx.setTimeout((int) seconds);
     }
 
     public record Report(long runId, long chargesChecked, List<Finding> findings, boolean clean) {}
