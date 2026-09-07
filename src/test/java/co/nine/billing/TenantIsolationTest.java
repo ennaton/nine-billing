@@ -222,7 +222,9 @@ class TenantIsolationTest extends PostgresTestBase {
         assertThat(metrics.getStatusCode()).isNotEqualTo(HttpStatus.OK);
 
         // Probes keep working, unauthenticated, which is the point of the open set.
-        ResponseEntity<String> health = raw.getForEntity("/actuator/health", String.class);
+        // The readiness group, not the root: the root also carries reconciliation
+        // and earlier tests leave drift behind. This claim is about keyless reach.
+        ResponseEntity<String> health = raw.getForEntity("/actuator/health/readiness", String.class);
         assertThat(health.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 

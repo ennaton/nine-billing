@@ -68,7 +68,10 @@ NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun   # migrates with Flyway, 
 ./gradlew test             # spins up its own Postgres via Testcontainers
 ```
 
-Health: `GET /actuator/health`. The key filter denies by default: every request needs
+Health: `GET /actuator/health` aggregates every indicator, so a reconciliation
+finding takes it to 503. A deployer wires the two probes instead:
+`/actuator/health/liveness` decides a restart, `/actuator/health/readiness`
+decides traffic. The key filter denies by default: every request needs
 `X-Api-Key` except `/actuator` and `/admin`, and `/admin` carries its own bootstrap-secret
 check inside the handler. Mint a key with `POST /admin/keys` and the bootstrap secret
 (step 0 in `http/billing.http`).

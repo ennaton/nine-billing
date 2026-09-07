@@ -35,6 +35,9 @@ nine:
   billing:
     reconcile:
       interval: ${NINE_RECONCILE_INTERVAL:PT15M}
+      # An upper bound on one run, so a run waiting on a lock ends by itself
+      # rather than holding the scheduler until someone notices.
+      timeout: ${NINE_RECONCILE_TIMEOUT:PT2M}
     # Required to mint API keys via POST /admin/keys. Empty disables minting.
     bootstrap-secret: ${NINE_BOOTSTRAP_SECRET:}
     # The second database role. Reconciliation and the first key for a new
@@ -61,6 +64,14 @@ management:
     health:
       probes:
         enabled: true
+      group:
+        # Boot's own probe groups hold one member each, livenessState and
+        # readinessState, so nothing else reaches a probe until it is named
+        # here. A service that cannot reach the ledger must stop taking
+        # traffic, which is readiness. It stays out of liveness on purpose:
+        # restarting the process does not bring the database back.
+        readiness:
+          include: readinessState, db
 
 server:
   port: 18081
