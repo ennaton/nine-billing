@@ -20,7 +20,9 @@ If you add a table that holds money, it gets the same treatment before it gets a
 
 **Money is `BIGINT` minor units.** No floating type touches money anywhere. `Money` refuses arithmetic across currencies.
 
-**Two database roles.** Flyway migrates as the owner; the service runs as `nine_app`, which is neither superuser nor table owner and holds no `UPDATE` or `DELETE` grant on ledger tables. Superuser and owner both bypass row-level security, so the runtime role must be neither. Do not "simplify" this to one role.
+**Two database roles, and neither of them is a superuser.** Flyway migrates as `nine_owner`; the service runs as `nine_app`, which is neither superuser nor table owner and holds no `UPDATE` or `DELETE` grant on ledger tables. Superuser and owner both bypass row-level security, so the runtime role must be neither, and the owner must not be a superuser or `FORCE ROW LEVEL SECURITY` on the seven tenant tables buys nothing. `db/bootstrap.sql` creates the owner and runs once, as a superuser, before Flyway ever connects. Do not "simplify" this to one role.
+
+**A migration that writes tenant rows binds a tenant first.** The owner is subject to `FORCE ROW LEVEL SECURITY` like everyone else, so an `UPDATE` or `DELETE` with no tenant bound reports success and changes nothing: measured, `UPDATE 0` and `DELETE 0` against two rows that were still there afterwards, and Flyway records the migration as applied. Either bind `app.tenant_id`, or take the policy off and put it back inside one transaction (`ALTER TABLE ... NO FORCE`, the statement, `ALTER TABLE ... FORCE`) so the table is never left without it.
 
 **Balances are derived, never stored.** A stored balance is a second source of truth that drifts.
 

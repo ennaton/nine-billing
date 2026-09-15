@@ -212,11 +212,11 @@ class LedgerInvariantsTest extends PostgresTestBase {
             .as("negative, which no test had ever sent to the database")
             .contains(ConstraintRules.Rule.AMOUNT_NOT_POSITIVE);
 
-        // Twice over, like immutability. A CHECK constraint binds the owner as
-        // well, so the principal that can reach past row level security cannot
-        // reach past this.
+        // Twice over, like immutability. A CHECK constraint binds a superuser as
+        // well, so the one principal that can reach past row level security
+        // cannot reach past this.
         assertThat(ruleFor(() -> rawPosting(superuser(), tx, -1)))
-            .as("the owner is refused by the same constraint")
+            .as("a superuser is refused by the same constraint")
             .contains(ConstraintRules.Rule.AMOUNT_NOT_POSITIVE);
     }
 
@@ -245,7 +245,7 @@ class LedgerInvariantsTest extends PostgresTestBase {
         assertThatThrownBy(() -> jdbc.update("UPDATE postings SET amount_minor = 9999 WHERE transaction_id = ?", tx))
             .rootCause().hasMessageContaining("permission denied");
 
-        // Layer 2: even the table owner, who has the grant, is stopped by the trigger.
+        // Layer 2: even a superuser, who needs no grant at all, is stopped by the trigger.
         assertThatThrownBy(() -> superuser().update("UPDATE postings SET amount_minor = 9999 WHERE transaction_id = ?", tx))
             .rootCause().hasMessageContaining("immutable");
 
@@ -403,7 +403,8 @@ class LedgerInvariantsTest extends PostgresTestBase {
 
     // ---- helpers -------------------------------------------------------------------
 
-    /** The table owner, outside the app's pool. The only principal that can reach the triggers. */
+    /** A superuser, outside the app's pool. The only principal that can reach the triggers: the
+     *  table owner is nine_owner now, and row level security applies to it like anyone else. */
     JdbcTemplate superuser() {
         return new JdbcTemplate(new org.springframework.jdbc.datasource.DriverManagerDataSource(
             POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
