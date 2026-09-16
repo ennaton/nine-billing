@@ -77,3 +77,59 @@ BEGIN
         EXECUTE 'GRANT nine_app TO nine_owner WITH ADMIN OPTION, INHERIT FALSE, SET FALSE';
     END IF;
 END $$;
+
+-- Handing over the database does not hand over what is already in it. On a
+-- database Flyway migrated as postgres, the next run as nine_owner takes
+-- "permission denied for table flyway_schema_history" on the history insert and
+-- "must be owner of table accounts" on the first ALTER, both measured. So the
+-- objects move too, and this is the whole one-time step rather than half of it.
+--
+-- Not REASSIGN OWNED BY postgres: that also moves objects outside this schema
+-- that the bootstrap superuser owns and needs. An explicit loop over public is
+-- the narrow version. Indexes, constraints and triggers follow their table, so
+-- they are not listed; partitions do not follow their parent, which is why
+-- every relation is visited rather than only the top of each tree.
+--
+-- Identity sequences are skipped deliberately: an owned sequence cannot change
+-- hands on its own, measured, "cannot change owner of sequence
+-- reconciliation_runs_id_seq, linked to table reconciliation_runs". It follows
+-- the table instead, which is why only free standing sequences are listed.
+--
+-- On a fresh database this finds nothing, which is what makes it safe to leave
+-- in a script that also runs before the first migration.
+DO $$
+DECLARE r record;
+BEGIN
+    FOR r IN
+        SELECT c.oid::regclass AS ident, c.relkind
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public'
+           AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+           AND c.relowner <> 'nine_owner'::regrole
+           AND NOT (c.relkind = 'S' AND EXISTS (
+                     SELECT 1 FROM pg_depend d
+                      WHERE d.classid = 'pg_class'::regclass
+                        AND d.objid = c.oid AND d.deptype IN ('a', 'i')))
+         ORDER BY (c.relkind = 'S')
+    LOOP
+        CASE r.relkind
+            WHEN 'S' THEN EXECUTE format('ALTER SEQUENCE %s OWNER TO nine_owner', r.ident);
+            WHEN 'v' THEN EXECUTE format('ALTER VIEW %s OWNER TO nine_owner', r.ident);
+            WHEN 'm' THEN EXECUTE format('ALTER MATERIALIZED VIEW %s OWNER TO nine_owner', r.ident);
+            WHEN 'f' THEN EXECUTE format('ALTER FOREIGN TABLE %s OWNER TO nine_owner', r.ident);
+            ELSE            EXECUTE format('ALTER TABLE %s OWNER TO nine_owner', r.ident);
+        END CASE;
+    END LOOP;
+
+    FOR r IN
+        SELECT p.oid::regprocedure AS ident, p.prokind
+          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'public' AND p.proowner <> 'nine_owner'::regrole
+    LOOP
+        IF r.prokind = 'p' THEN
+            EXECUTE format('ALTER PROCEDURE %s OWNER TO nine_owner', r.ident);
+        ELSE
+            EXECUTE format('ALTER FUNCTION %s OWNER TO nine_owner', r.ident);
+        END IF;
+    END LOOP;
+END $$;

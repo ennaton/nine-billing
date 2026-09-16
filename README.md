@@ -43,7 +43,9 @@ Two of them are checked twice: once in Java so the caller gets a clear error bef
 
 **Reconciliation is a job, and it records clean runs too.** `usage_charges` is what metering believes it charged; `postings` is what the ledger holds. They are written in one transaction, so in theory they cannot disagree. In practice a manual SQL fix, a bypassed trigger or a bug in this service can split them, and the only way to know is to compare. Three set-based queries run every 15 minutes (and on `POST /admin/reconciliation/run`): amount mismatch, orphan charge, unbalanced transaction. Every run is recorded, clean or not, and so is a run that could not finish: it carries the SQLState and no counts, because a zero would claim it counted and found none. The bound is worth stating: the row is itself a write, so a failure leaves one only while that write can happen. If the database is gone the log is all there is, which is why this does not replace an external signal for a job that never ran. The test for this deliberately corrupts the ledger as a superuser and asserts the drift is reported.
 
-**Two database roles, on purpose, and neither is a superuser.** Flyway migrates as `nine_owner`. The service runs as `nine_app`: not a superuser, not the owner of any table, and holding no `UPDATE` or `DELETE` grant on ledger tables at all. Superuser and owner both bypass row-level security, so the runtime role must be neither or every policy is decoration, and the owner must not be a superuser or the `FORCE` on those policies is decoration in turn: measured on `accounts`, a superuser owner reads every row with no tenant bound and `nine_owner` reads none, and its way out (`SET row_security = off`) raises rather than returning them. That holds for the four tenant tables; `api_keys` and the two reconciliation tables carry policies that allow a read with no tenant on purpose, so the owner is subject to those policies rather than above them. The immutability tests prove both layers: `nine_app` gets `permission denied` before the trigger is consulted; a superuser, which needs no grant at all, is stopped by the trigger anyway.
+**Two database roles, on purpose, and neither is a superuser.** The plainest half first: the credential a deployment hands Flyway used to be the cluster superuser, which reaches every database on that server, `nine_core` included. It is now `nine_owner`, a role that owns one database and bypasses nothing. The service runs as `nine_app`: not a superuser, not the owner of any table, and holding no `UPDATE` or `DELETE` grant on ledger tables at all. Superuser and owner both bypass row-level security, so the runtime role must be neither or every policy is decoration.
+
+What `FORCE ROW LEVEL SECURITY` adds on top of that is a guard against an accident, not a boundary. With a non-superuser owner it does bite: measured on `accounts`, a superuser owner reads every row with no tenant bound and `nine_owner` reads none, and `SET row_security = off` raises rather than returning them. But `nine_owner` can lift the policy with one `ALTER TABLE ... NO FORCE`, so what it stops is a query that forgot its tenant, not a principal that means to read the table. It also holds for the four tenant tables only; `api_keys` and the two reconciliation tables carry policies that allow a read with no tenant on purpose. The immutability tests prove both layers: `nine_app` gets `permission denied` before the trigger is consulted; a superuser, which needs no grant at all, is stopped by the trigger anyway.
 
 **Tenant isolation is a test on a reused connection.** Every tenant table has `FORCE ROW LEVEL SECURITY` and a policy on `current_tenant()`, which is `NULLIF(current_setting('app.tenant_id', true), '')::uuid`. The `NULLIF` is load-bearing: after a transaction commits, a custom GUC reverts to the empty string, not to unset, and `''::uuid` would turn the security boundary into a 500. With `NULLIF` it turns into zero rows. The GUC is bound in a `DataSource` wrapper on every connection checkout, not in a helper a repository might forget to call. `TenantIsolationTest` asserts: another tenant sees zero rows, cannot write a row claiming your tenant, no context at all sees zero rows, and no context does not throw.
 
@@ -66,12 +68,12 @@ parse.
 # local Postgres from nine-platform (port 15432, database nine_billing)
 (cd ../platform && docker compose up -d postgres)
 
-# Once per database, as a superuser, before Flyway: creates nine_owner and hands
-# it the database it is connected to, so the database goes in the URL and the
-# script refuses the cluster default rather than handing over the wrong one. The
-# compose stack does this for a database it creates, so this line is for one that
-# is already there. It does not move tables another role already owns, which is
-# BI12.5's second half.
+# Once per database, as a superuser, before Flyway: creates nine_owner, hands it
+# the database it is connected to, and moves every object in public over to it.
+# The database goes in the URL, and the script refuses the cluster default rather
+# than handing over the wrong one. The compose stack does this for a database it
+# creates; this line is for one that is already there, including one Flyway has
+# already migrated as postgres.
 psql postgresql://postgres@localhost:15432/nine_billing -f src/main/resources/db/bootstrap.sql
 
 NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun   # migrates with Flyway, serves on :18081
