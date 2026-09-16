@@ -95,6 +95,11 @@ END $$;
 -- reconciliation_runs_id_seq, linked to table reconciliation_runs". It follows
 -- the table instead, which is why only free standing sequences are listed.
 --
+-- It moves everything in public that nine_owner does not already own, so a
+-- deployment that has deliberately given an object to some third role has to
+-- exclude it here rather than discover the change afterwards. Nothing in this
+-- schema is in that position today.
+--
 -- On a fresh database this finds nothing, which is what makes it safe to leave
 -- in a script that also runs before the first migration.
 DO $$
