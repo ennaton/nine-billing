@@ -13,12 +13,18 @@
 -- This does not stop a superuser, and nothing inside the database can. What it
 -- changes is that the credential the deployment hands Flyway is no longer one.
 --
--- Nor does it make every table unreadable to the owner. Four of the seven are
--- like accounts. api_keys and the two reconciliation tables carry policies that
--- allow a read with no tenant on purpose, key lookup happens before a tenant is
--- known and reconciliation has no tenant at all, so FORCE binds the owner there
--- too and the policy still lets it through. The gain is that the owner is
--- subject to the policies rather than above them.
+-- Nor does it make every table unreadable to the owner. Five of the seven are
+-- like accounts. Two are not: api_keys, because a key is looked up before any
+-- tenant is known (V4's key_lookup), and reconciliation_runs, because it holds
+-- counts rather than tenant rows and V5 gave it USING (true) deliberately.
+-- reconciliation_findings is not one of them, whatever a first reading of V4
+-- suggests: V5 replaced that policy with findings_operator_only and said in its
+-- own header that the comment claiming these two tables hold no tenant data was
+-- wrong, because findings carries tenant_id. Measured, one row present, no
+-- tenant bound: the owner reads 0 from findings and 244 from runs.
+--
+-- So the gain is that the owner is subject to the policies rather than above
+-- them, which is not the same sentence as "the owner reads nothing".
 
 -- The database this hands over is whichever one the connection is on, so it has
 -- to be the right one. Measured: run against the cluster default and it hands
@@ -64,18 +70,32 @@ END $$;
 -- so this fires only on a cluster that had nine_app first, which today means
 -- the shared development stack and not a deployment.
 --
--- INHERIT FALSE and SET FALSE keep it to administering the role. It matters
--- because nine-core authenticates as nine_app on that same cluster: measured,
--- with SET FALSE, SET ROLE nine_app is "permission denied to set role", while
--- V12's ALTER ROLE ... PASSWORD still returns ALTER ROLE. It is not a wall.
--- ADMIN is what V12 needs, and ADMIN is enough to add a second membership row
--- granting SET back, which was measured too. What this removes is the accident;
--- the deliberate version has to write a row in pg_auth_members to happen.
+-- INHERIT FALSE and SET FALSE narrow what the membership does day to day:
+-- measured, SET ROLE nine_app is then "permission denied to set role" while
+-- V12's ALTER ROLE ... PASSWORD still returns ALTER ROLE.
+--
+-- They are not a boundary, and the plain version of that is worth having in the
+-- file. ADMIN plus CREATEROLE is the power to become the role: nine_owner can
+-- set nine_app's password and log in as it, which reaches nine_core on a shared
+-- cluster and writes nothing to pg_auth_members at all. It can also take that
+-- role's login away. The fix for it is not here, it is one runtime role per
+-- service, which is BI12.7.
+--
+-- nine_operator is granted the same way, and only because of where the role
+-- came from. On a database this script bootstraps after a migration as postgres
+-- both roles already exist and nine_owner administers neither; on a fresh one
+-- V4 and V9 create them and the creator holds ADMIN already. Without this line
+-- the two paths end with different memberships, and the first migration that
+-- does for nine_operator what V12 did for nine_app passes on one and fails on
+-- the other.
 DO $$
+DECLARE r text;
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nine_app') THEN
-        EXECUTE 'GRANT nine_app TO nine_owner WITH ADMIN OPTION, INHERIT FALSE, SET FALSE';
-    END IF;
+    FOREACH r IN ARRAY ARRAY['nine_app', 'nine_operator'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+            EXECUTE format('GRANT %I TO nine_owner WITH ADMIN OPTION, INHERIT FALSE, SET FALSE', r);
+        END IF;
+    END LOOP;
 END $$;
 
 -- Handing over the database does not hand over what is already in it. On a

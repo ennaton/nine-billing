@@ -45,7 +45,7 @@ Two of them are checked twice: once in Java so the caller gets a clear error bef
 
 **Two database roles, on purpose, and neither is a superuser.** The plainest half first: the credential a deployment hands Flyway used to be the cluster superuser, which reaches every database on that server, `nine_core` included. It is now `nine_owner`, a role that owns one database and bypasses nothing. The service runs as `nine_app`: not a superuser, not the owner of any table, and holding no `UPDATE` or `DELETE` grant on ledger tables at all. Superuser and owner both bypass row-level security, so the runtime role must be neither or every policy is decoration.
 
-What `FORCE ROW LEVEL SECURITY` adds on top of that is a guard against an accident, not a boundary. With a non-superuser owner it does bite: measured on `accounts`, a superuser owner reads every row with no tenant bound and `nine_owner` reads none, and `SET row_security = off` raises rather than returning them. But `nine_owner` can lift the policy with one `ALTER TABLE ... NO FORCE`, so what it stops is a query that forgot its tenant, not a principal that means to read the table. It also holds for the four tenant tables only; `api_keys` and the two reconciliation tables carry policies that allow a read with no tenant on purpose. The immutability tests prove both layers: `nine_app` gets `permission denied` before the trigger is consulted; a superuser, which needs no grant at all, is stopped by the trigger anyway.
+What `FORCE ROW LEVEL SECURITY` adds on top of that is a guard against an accident, not a boundary. With a non-superuser owner it does bite: measured on `accounts`, a superuser owner reads every row with no tenant bound and `nine_owner` reads none, and `SET row_security = off` raises rather than returning them. But `nine_owner` can lift the policy with one `ALTER TABLE ... NO FORCE`, so what it stops is a query that forgot its tenant, not a principal that means to read the table. It holds for five of the seven policied tables. Two let the owner through on purpose: `api_keys`, because a key is looked up before any tenant is known, and `reconciliation_runs`, because it holds counts rather than tenant rows. `reconciliation_findings` is not one of them and `V5` is where that was settled, since it carries `tenant_id` and its policy is operator only. The immutability tests prove both layers: `nine_app` gets `permission denied` before the trigger is consulted; a superuser, which needs no grant at all, is stopped by the trigger anyway.
 
 **Tenant isolation is a test on a reused connection.** Every tenant table has `FORCE ROW LEVEL SECURITY` and a policy on `current_tenant()`, which is `NULLIF(current_setting('app.tenant_id', true), '')::uuid`. The `NULLIF` is load-bearing: after a transaction commits, a custom GUC reverts to the empty string, not to unset, and `''::uuid` would turn the security boundary into a 500. With `NULLIF` it turns into zero rows. The GUC is bound in a `DataSource` wrapper on every connection checkout, not in a helper a repository might forget to call. `TenantIsolationTest` asserts: another tenant sees zero rows, cannot write a row claiming your tenant, no context at all sees zero rows, and no context does not throw.
 
@@ -70,11 +70,13 @@ parse.
 
 # Once per database, as a superuser, before Flyway: creates nine_owner, hands it
 # the database it is connected to, and moves every object in public over to it.
-# The database goes in the URL, and the script refuses the cluster default rather
-# than handing over the wrong one. The compose stack does this for a database it
+# The database is named in the connection, and the script refuses the cluster
+# default rather than handing over the wrong one. Through docker rather than a
+# local psql, which is not part of the toolchain above and would meet the
+# container's own pg_hba rules coming from the host. The compose stack does this for a database it
 # creates; this line is for one that is already there, including one Flyway has
 # already migrated as postgres.
-psql postgresql://postgres@localhost:15432/nine_billing -f src/main/resources/db/bootstrap.sql
+docker exec -i nine-postgres-1 psql -U postgres -d nine_billing < src/main/resources/db/bootstrap.sql
 
 NINE_BOOTSTRAP_SECRET=dev-bootstrap ./gradlew bootRun   # migrates with Flyway, serves on :18081
 ./gradlew test             # spins up its own Postgres via Testcontainers

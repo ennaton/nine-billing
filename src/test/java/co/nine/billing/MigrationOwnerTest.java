@@ -1,10 +1,8 @@
 package co.nine.billing;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.resttestclient.TestRestTemplate;
@@ -36,24 +34,34 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * connects as it. This asserts what that buys, against the credential the
  * application itself resolved rather than a copy of it: the role is neither a
  * superuser nor BYPASSRLS, it owns the tables, and with no tenant bound it
- * reads none of the rows it owns.
+ * reads none of the rows in five of the seven.
  *
- * <p>It does not assert anything about a superuser, which still reads
- * everything. Nothing inside the database can change that, and saying so is
- * the point of writing it down here.
+ * <p>It asserts nothing about a superuser, which still reads everything.
+ * Nothing inside the database can change that, and saying so is the point of
+ * writing it down here.
  *
- * <p>Nor does it claim the owner reads nothing anywhere. Seven tables carry
- * FORCE and four of them behave like accounts; the other three carry policies
- * that allow a read with no tenant on purpose, and the last case here pins that
- * difference rather than leaving it to be discovered.
+ * <p>Two of the seven let the owner read: api_keys, because a key is looked up
+ * before any tenant is known, and reconciliation_runs, because it holds counts
+ * rather than tenant rows. reconciliation_findings looks like a third and is
+ * not. V4 gave it USING (true); V5 took that away and said in its own header
+ * that the comment claiming these tables hold no tenant data was wrong, since
+ * findings carries tenant_id. Both halves are asserted with rows present,
+ * because zero from an empty table is not a measurement.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureTestRestTemplate
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class MigrationOwnerTest extends PostgresTestBase {
 
-    static final List<String> TENANT_TABLES =
-        List.of("accounts", "ledger_transactions", "postings", "usage_charges");
+    /** With no tenant bound the owner reads none of these. */
+    static final List<String> CLOSED =
+        List.of("accounts", "ledger_transactions", "postings", "usage_charges", "reconciliation_findings");
+
+    /** And these two let it through, by a policy that means to. */
+    static final List<String> OPEN = List.of("api_keys", "reconciliation_runs");
+
+    /** Fixed, so every case seeds the same rows and none of them needs an order. */
+    static final UUID TENANT = UUID.fromString("0b7d5a1e-9f3c-4a77-8a1d-5c2e6f0b91aa");
+    static String apiKey;
 
     @Autowired TestRestTemplate raw;
 
@@ -72,34 +80,57 @@ class MigrationOwnerTest extends PostgresTestBase {
             POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
     }
 
-    @Test
-    @Order(1)
-    @DisplayName("setup: one tenant's usage event, which writes to all four tenant tables")
-    void setup() {
-        UUID tenant = UUID.randomUUID();
-        HttpHeaders h = new HttpHeaders();
-        h.set("X-Bootstrap-Secret", "test-bootstrap-secret");
-        ResponseEntity<Map> minted = raw.postForEntity("/admin/keys",
-            new HttpEntity<>(Map.of("tenantId", tenant, "label", "owner-test"), h), Map.class);
-        assertThat(minted.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    @BeforeEach
+    void seed() {
+        // Idempotent, so this class needs no method order and every case can be
+        // run on its own: the usage endpoint keys on eventId, and the operator
+        // rows are written only when they are not already there.
+        if (apiKey == null) {
+            HttpHeaders bootstrap = new HttpHeaders();
+            bootstrap.set("X-Bootstrap-Secret", "test-bootstrap-secret");
+            ResponseEntity<Map> minted = raw.postForEntity("/admin/keys",
+                new HttpEntity<>(Map.of("tenantId", TENANT, "label", "owner-test"), bootstrap), Map.class);
+            assertThat(minted.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+            apiKey = (String) minted.getBody().get("apiKey");
+        }
 
         HttpHeaders key = new HttpHeaders();
-        key.set("X-Api-Key", (String) minted.getBody().get("apiKey"));
+        key.set("X-Api-Key", apiKey);
         ResponseEntity<Map> usage = raw.postForEntity("/v1/usage", new HttpEntity<>(Map.of(
-            "eventId", "owner-1", "tenantId", tenant, "metric", "seats", "quantity", 3), key), Map.class);
-        assertThat(usage.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+            "eventId", "owner-1", "tenantId", TENANT, "metric", "seats", "quantity", 3), key), Map.class);
+        // 201 the first time and 200 after it: the endpoint keys on eventId,
+        // which is what makes seeding in a @BeforeEach safe rather than a way
+        // to accumulate rows.
+        assertThat(usage.getStatusCode()).isIn(HttpStatus.CREATED, HttpStatus.OK);
 
-        // Without this the zero below would be indistinguishable from an empty
-        // database, which is the way this assertion fails without failing.
-        for (String table : TENANT_TABLES) {
+        // No HTTP call in this class writes a finding, and a finding is the row
+        // that tells the two reconciliation tables apart.
+        if (asSuperuser().queryForObject("SELECT count(*) FROM reconciliation_findings", Long.class) == 0) {
+            Long runId = asSuperuser().queryForObject(
+                "INSERT INTO reconciliation_runs (started_at, finished_at, charges_checked,"
+                    + " amount_mismatches, orphan_charges, unbalanced_txs)"
+                    + " VALUES (now(), now(), 1, 1, 0, 0) RETURNING id", Long.class);
+            asSuperuser().update(
+                "INSERT INTO reconciliation_findings (run_id, kind, tenant_id, detail)"
+                    + " VALUES (?, 'AMOUNT_MISMATCH', ?, 'seeded by MigrationOwnerTest')",
+                runId, TENANT);
+        }
+
+        // Without this the zeros below would be indistinguishable from an empty
+        // database, which is how this assertion would fail without failing.
+        for (String table : CLOSED) {
             assertThat(asSuperuser().queryForObject("SELECT count(*) FROM " + table, Long.class))
                 .as("rows in %s, which the owner must then not see", table)
+                .isPositive();
+        }
+        for (String table : OPEN) {
+            assertThat(asSuperuser().queryForObject("SELECT count(*) FROM " + table, Long.class))
+                .as("rows in %s, which the owner is then expected to see", table)
                 .isPositive();
         }
     }
 
     @Test
-    @Order(2)
     @DisplayName("the role Flyway migrates as is neither a superuser nor BYPASSRLS, and owns the tables")
     void theOwnerIsNotASuperuser() {
         Map<String, Object> role = asSuperuser().queryForMap(
@@ -109,19 +140,17 @@ class MigrationOwnerTest extends PostgresTestBase {
         assertThat(role.get("rolbypassrls")).as("%s bypasses row-level security by attribute", ownerUser)
             .isEqualTo(false);
 
-        List<String> owners = asSuperuser().queryForList("""
-            SELECT DISTINCT pg_get_userbyid(c.relowner)
-              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = 'public' AND c.relkind = 'r'
-            """, String.class);
+        List<String> owners = asSuperuser().queryForList(
+            "SELECT DISTINCT pg_get_userbyid(c.relowner) FROM pg_class c"
+                + " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                + " WHERE n.nspname = 'public' AND c.relkind = 'r'", String.class);
         assertThat(owners).as("every table has to belong to the role FORCE applies to").containsExactly(ownerUser);
     }
 
     @Test
-    @Order(3)
-    @DisplayName("with no tenant bound the owner reads none of the rows in the four tenant tables")
+    @DisplayName("with no tenant bound the owner reads none of the rows in five of the seven")
     void theOwnerReadsNothingWithoutATenant() {
-        for (String table : TENANT_TABLES) {
+        for (String table : CLOSED) {
             assertThat(asOwner().queryForObject("SELECT count(*) FROM " + table, Long.class))
                 .as("%s read as the owner with no tenant bound", table)
                 .isZero();
@@ -129,12 +158,12 @@ class MigrationOwnerTest extends PostgresTestBase {
     }
 
     @Test
-    @Order(4)
     @DisplayName("the owner's way out of RLS fails closed rather than opening the table")
     void theEscapeHatchRaisesInsteadOfBypassing() {
         // row_security = off is the documented way for an owner to step around
         // a policy. Against FORCE it raises instead, so the failure mode is an
         // error a caller sees rather than a silently wider read.
+        //
         // The root cause, because Spring's own message carries the statement
         // text and nothing else: asserting on the outer one passes for any
         // broken SQL, which is a test that cannot tell this failure apart.
@@ -145,18 +174,17 @@ class MigrationOwnerTest extends PostgresTestBase {
     }
 
     @Test
-    @Order(5)
-    @DisplayName("the tables whose policy allows a read with no tenant still allow it, to the owner too")
+    @DisplayName("the two whose policy allows a read with no tenant still allow it, to the owner too")
     void thePolicyThatAllowsNoTenantStillDoes() {
-        // FORCE binds the owner on all seven, but three of these policies let a
-        // read with no tenant through deliberately: key lookup happens before a
-        // tenant is known (V4's key_lookup), and the two reconciliation tables
-        // hold no tenant data and carry USING (true). So the sentence above is
-        // about the four tenant tables, and this is the other half of it. Only
-        // api_keys is asserted, because the setup above is what put a row in it
-        // and this suite shares one database.
-        assertThat(asOwner().queryForObject("SELECT count(*) FROM api_keys", Long.class))
-            .as("api_keys read as the owner with no tenant bound, which key_lookup allows on purpose")
-            .isPositive();
+        // FORCE binds the owner on all seven, and on these two the policy still
+        // says yes: key lookup happens before a tenant is known (V4's
+        // key_lookup) and reconciliation_runs holds counts rather than tenant
+        // rows (V5's runs_read_any). The difference from the five above is only
+        // visible when there is something to read, which the setup guarantees.
+        for (String table : OPEN) {
+            assertThat(asOwner().queryForObject("SELECT count(*) FROM " + table, Long.class))
+                .as("%s read as the owner with no tenant bound, which its policy allows on purpose", table)
+                .isPositive();
+        }
     }
 }

@@ -15,7 +15,9 @@ import org.testcontainers.utility.MountableFile;
  * <p>The bootstrap goes in through the image's own init directory rather than
  * withInitScript, because it is dollar-quoted and that path hands the file to
  * psql instead of to a splitter that breaks on the semicolons inside a DO
- * block. It is also exactly how the compose stack runs it.
+ * block. The compose stack uses the same directory but not this file: it has a
+ * hand copy of three of these statements, so what is proven here is the script
+ * and what runs there is the copy.
  */
 public abstract class PostgresTestBase {
 

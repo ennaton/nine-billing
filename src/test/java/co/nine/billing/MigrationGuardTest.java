@@ -58,13 +58,19 @@ class MigrationGuardTest {
     @Order(1)
     @DisplayName("the owner the bootstrap created migrates the database")
     void theOwnerMigrates() {
-        assertThat(flywayAs("nine_owner", "nine_owner_dev").migrate().migrationsExecuted).isPositive();
+        // isNotNegative rather than isPositive: run on its own this is the
+        // first migrate and executes thirteen, run after the others it executes
+        // none, and either way what it asserts is that the owner is allowed to.
+        assertThat(flywayAs("nine_owner", "nine_owner_dev").migrate().migrationsExecuted).isNotNegative();
     }
 
     @Test
     @Order(2)
     @DisplayName("the callback runs again with nothing pending, which is why it is not a migration")
     void theCallbackRunsWithNothingPending() {
+        // Migrated first rather than assumed, so this case is the same case
+        // whether the class runs whole or one method at a time.
+        flywayAs("nine_owner", "nine_owner_dev").migrate();
         assertThat(flywayAs("nine_owner", "nine_owner_dev").migrate().migrationsExecuted)
             .as("something was still pending, so this case proves nothing about the callback")
             .isZero();
@@ -79,6 +85,7 @@ class MigrationGuardTest {
     @Order(3)
     @DisplayName("a bootstrapped database whose tables never moved is refused too")
     void tablesLeftBehindAreRefused() {
+        flywayAs("nine_owner", "nine_owner_dev").migrate();
         // The state finding 1 of the review describes: connected as nine_owner,
         // so current_user alone reports this database as healthy, while the
         // table that carries FORCE still belongs to a role that ignores it.
