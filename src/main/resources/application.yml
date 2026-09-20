@@ -2,14 +2,23 @@ spring:
   application:
     name: nine-billing
 
-  # Two roles on purpose.
+  # Two roles on purpose, and neither of them is a superuser.
   #
   # The runtime datasource is nine_app: not a superuser, not the table owner.
   # Both of those bypass row-level security, so the app must be neither, or
   # every policy in V4 is decoration.
   #
-  # Flyway migrates as the owner, because creating tables, triggers and
-  # policies needs it. It never serves a request.
+  # Flyway migrates as nine_owner, because creating tables, triggers and
+  # policies needs the owner. It never serves a request. The reason it is not
+  # postgres is blunter than the RLS argument: this credential lives in a
+  # deployment's configuration, and as the cluster superuser it reached every
+  # database on the server, nine_core included. It now owns one database.
+  #
+  # FORCE ROW LEVEL SECURITY on top of that is an accident guard rather than a
+  # boundary: measured, a superuser owner reads every row with no tenant bound
+  # and nine_owner reads none, but nine_owner can still lift the policy with one
+  # ALTER TABLE. db/bootstrap.sql creates the role and has to run once, as a
+  # superuser, before this ever connects.
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/nine_billing}
     username: ${SPRING_DATASOURCE_USERNAME:nine_app}
@@ -18,8 +27,8 @@ spring:
     enabled: true
     locations: classpath:db/migration
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:15432/nine_billing}
-    user: ${NINE_MIGRATION_USERNAME:postgres}
-    password: ${NINE_MIGRATION_PASSWORD:postgres}
+    user: ${NINE_MIGRATION_USERNAME:nine_owner}
+    password: ${NINE_MIGRATION_PASSWORD:nine_owner_dev}
     placeholders:
       # V9 creates nine_operator with this. It is a placeholder rather than a
       # literal in the migration so that the deployment supplies the real one

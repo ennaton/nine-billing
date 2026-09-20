@@ -17,6 +17,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.MountableFile;
 
 import java.sql.Connection;
 import java.sql.Statement;
@@ -48,7 +49,9 @@ import static org.assertj.core.api.Assertions.fail;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class HealthProbesTest {
 
-    static final PostgreSQLContainer OWN = new PostgreSQLContainer("postgres:16-alpine");
+    static final PostgreSQLContainer OWN = new PostgreSQLContainer("postgres:16-alpine")
+        .withCopyFileToContainer(MountableFile.forClasspathResource("db/bootstrap.sql"),
+                                 "/docker-entrypoint-initdb.d/20-bootstrap.sql");
 
     static {
         OWN.start();
@@ -59,8 +62,6 @@ class HealthProbesTest {
         r.add("spring.datasource.url", OWN::getJdbcUrl);
         r.add("spring.datasource.username", () -> "nine_app");
         r.add("spring.flyway.url", OWN::getJdbcUrl);
-        r.add("spring.flyway.user", OWN::getUsername);
-        r.add("spring.flyway.password", OWN::getPassword);
         r.add("nine.billing.reconcile.interval", () -> "PT24H");
         r.add("nine.billing.reconcile.timeout", () -> "PT3S");
         r.add("nine.billing.bootstrap-secret", () -> "test-bootstrap-secret");
